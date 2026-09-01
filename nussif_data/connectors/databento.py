@@ -82,17 +82,27 @@ class DatabentoConnector(Connector):
 
     # -- the accessor --
     def option_chain(
-        self, *symbols, date, spot=None, moneyness=None, max_dte=None, refresh: bool = False
+        self,
+        *symbols,
+        date,
+        spot=None,
+        moneyness=None,
+        min_dte=None,
+        max_dte=None,
+        refresh: bool = False,
     ):
         """EOD option chain for each `symbol` on `date` (YYYY-MM-DD), filtered to
-        strikes within +-`moneyness` of spot and DTE <= `max_dte`.
+        strikes within +-`moneyness` of spot and DTE in [`min_dte`, `max_dte`].
 
         `spot` -- pass the underlier close for an accurate moneyness filter; if
         omitted, a rough nearest-expiry-median proxy is used (fine for a wide band).
+        `min_dte` -- raise it (e.g. 15) to drop the daily / weekly expiries; on
+        SPY/QQQ these otherwise blow past Databento's 2,000-symbol quote cap.
         Returns the canonical option-chain frame; `right` in {'C','P'}. No IV/greeks/OI.
         """
         spec = self.cfg["datasets"]["option_chain"]
         mny = spec.get("default_moneyness", 0.25) if moneyness is None else moneyness
+        ndte = spec.get("default_min_dte", 0) if min_dte is None else min_dte
         mdte = spec.get("default_max_dte", 150) if max_dte is None else max_dte
         syms = [
             str(s).upper()
@@ -107,8 +117,8 @@ class DatabentoConnector(Connector):
 
         frames = [
             cached(
-                f"databento/option_chain/{s}/{date}/m{mny}_d{mdte}",
-                lambda s=s: self._one(s, str(date), spot, mny, mdte),
+                f"databento/option_chain/{s}/{date}/m{mny}_d{ndte}-{mdte}",
+                lambda s=s: self._one(s, str(date), spot, mny, ndte, mdte),
                 refresh=refresh,
             )
             for s in syms
@@ -117,10 +127,10 @@ class DatabentoConnector(Connector):
         return OPTION_CHAIN.validate(out, where="databento.option_chain")
 
     # -- stages --
-    def _one(self, sym: str, date: str, spot, mny: float, mdte: int) -> pd.DataFrame:
+    def _one(self, sym: str, date: str, spot, mny: float, ndte: int, mdte: int) -> pd.DataFrame:
         spec = self.cfg["datasets"]["option_chain"]
         defn = self._get_definitions(sym, date)
-        defn = self._filter(defn, date, spot, mny, mdte)
+        defn = self._filter(defn, date, spot, mny, ndte, mdte)
         if defn.empty:
             raise UpstreamError(f"databento: no contracts in band for {sym} {date}")
         quotes = self._get_quotes(defn["raw_symbol"].tolist(), date, spec)
@@ -144,26 +154,37 @@ class DatabentoConnector(Connector):
         c = _close_utc(
             date, spec.get("close_tz", "America/New_York"), spec.get("close_time", "16:00")
         )
-        data = self._client().timeseries.get_range(
-            dataset=self.DATASET,
-            schema="cbbo-1m",
-            symbols=raw_symbols,
-            stype_in="raw_symbol",
-            start=(c - timedelta(minutes=3)).isoformat(),
-            end=(c + timedelta(minutes=1)).isoformat(),
-        )
-        return data.to_df()  # databento >=0.80: float prices + pretty ts by default
+        start = (c - timedelta(minutes=3)).isoformat()
+        end = (c + timedelta(minutes=1)).isoformat()
+        cap = int(spec.get("max_quote_symbols", 2000))  # databento get_range hard limit
+        frames = []
+        for i in range(0, len(raw_symbols), cap):
+            data = self._client().timeseries.get_range(
+                dataset=self.DATASET,
+                schema="cbbo-1m",
+                symbols=raw_symbols[i : i + cap],
+                stype_in="raw_symbol",
+                start=start,
+                end=end,
+            )
+            frames.append(data.to_df())  # databento >=0.80: float prices + pretty ts
+        if len(frames) == 1:
+            return frames[0]
+        keep_index = all(f.index.name for f in frames)  # e.g. ts_event index
+        return pd.concat(frames) if keep_index else pd.concat(frames, ignore_index=True)
 
     # -- pure transforms --
     @staticmethod
-    def _filter(defn: pd.DataFrame, date: str, spot, mny: float, mdte: int) -> pd.DataFrame:
+    def _filter(
+        defn: pd.DataFrame, date: str, spot, mny: float, ndte: int, mdte: int
+    ) -> pd.DataFrame:
         d = defn.copy()
         d["expiration"] = pd.to_datetime(d["expiration"]).dt.tz_localize(None)
         d["strike"] = pd.to_numeric(d["strike_price"], errors="coerce")
         d["dte"] = (d["expiration"] - pd.Timestamp(date)).dt.days
         s = float(spot) if spot is not None else _guess_spot(d)
         m = (d["strike"] >= s * (1 - mny)) & (d["strike"] <= s * (1 + mny))
-        return d[m & d["dte"].between(0, mdte)].reset_index(drop=True)
+        return d[m & d["dte"].between(ndte, mdte)].reset_index(drop=True)
 
     @staticmethod
     def _assemble(sym, date, defn, quotes, spec) -> pd.DataFrame:

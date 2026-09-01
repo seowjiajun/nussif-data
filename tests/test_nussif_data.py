@@ -328,8 +328,36 @@ def test_databento_filter_moneyness_and_dte():
             "instrument_class": ["P", "P", "C", "C", "C", "C"],
         }
     )
-    out = DatabentoConnector._filter(defn, "2024-06-03", spot=100.0, mny=0.10, mdte=150)
+    out = DatabentoConnector._filter(defn, "2024-06-03", spot=100.0, mny=0.10, ndte=0, mdte=150)
     assert set(out["strike"]) == {95.0, 100.0, 105.0}  # 80/130 out of band; 2025 expiry > 150 DTE
+
+    # min_dte floor drops the near expiries (18 DTE here) -> only the 2025 leg
+    far = DatabentoConnector._filter(defn, "2024-06-03", spot=100.0, mny=0.10, ndte=30, mdte=400)
+    assert set(far["strike"]) == {100.0}  # the 2025-06-20 contract
+
+
+def test_databento_get_quotes_chunks_above_symbol_cap():
+    from nussif_data.connectors.databento import DatabentoConnector
+
+    calls = []
+
+    class _FakeData:
+        def to_df(self):
+            return pd.DataFrame({"instrument_id": [], "bid_px_00": [], "ask_px_00": []})
+
+    class _FakeTS:
+        def get_range(self, **kw):
+            calls.append(len(kw["symbols"]))
+            return _FakeData()
+
+    class _FakeClient:
+        timeseries = _FakeTS()
+
+    conn = DatabentoConnector.__new__(DatabentoConnector)
+    conn._cli = _FakeClient()
+    spec = {"close_tz": "America/New_York", "close_time": "16:00", "max_quote_symbols": 2000}
+    conn._get_quotes([f"O{i}" for i in range(4500)], "2024-06-03", spec)
+    assert calls == [2000, 2000, 500]  # split into <=cap batches
 
 
 def test_databento_assemble_to_canonical():

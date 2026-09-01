@@ -62,4 +62,6 @@ connectors:
         close_time: "16:00"
         history_start: "2013-04-01"
         default_moneyness: 0.25      # keep strikes within +-25% of spot
+        default_min_dte: 0           # raise it to skip the daily/weekly expiries
         default_max_dte: 150
+        max_quote_symbols: 2000      # databento get_range hard cap -> chunk above this
