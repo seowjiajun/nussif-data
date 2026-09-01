@@ -3,10 +3,11 @@ datasets it serves, and how to fetch one symbol of one dataset. The base class
 owns the repetitive part -- per-symbol caching, combining, schema validation,
 date slicing -- so a concrete connector is small.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Sequence
+from collections.abc import Sequence
 
 import pandas as pd
 
@@ -17,8 +18,9 @@ from .schema import Schema
 
 
 class Dataset:
-    def __init__(self, name: str, schema: Schema, *, needs_key: bool = False,
-                 description: str = ""):
+    def __init__(
+        self, name: str, schema: Schema, *, needs_key: bool = False, description: str = ""
+    ):
         self.name = name
         self.schema = schema
         self.needs_key = needs_key
@@ -27,7 +29,7 @@ class Dataset:
 
 class Connector(ABC):
     name: str = "connector"
-    primary_method: str | None = None   # method name for the nd.<vendor>(...) shorthand
+    primary_method: str | None = None  # method name for the nd.<vendor>(...) shorthand
 
     def __call__(self, *symbols, **kw):
         """nd.<vendor>(...) == nd.<vendor>.<primary dataset method>(...)."""
@@ -68,19 +70,33 @@ class Connector(ABC):
         return True
 
     # -- the template method callers hit (via the registry) --
-    def fetch(self, dataset: str, symbols: Sequence[str] = (), *,
-              start=None, end=None, refresh: bool = False, out=None, raw: bool = False):
+    def fetch(
+        self,
+        dataset: str,
+        symbols: Sequence[str] = (),
+        *,
+        start=None,
+        end=None,
+        refresh: bool = False,
+        out=None,
+        raw: bool = False,
+    ):
         """raw=False -> one tidy, schema-validated, date-sliced frame.
         raw=True  -> dict {symbol: vendor frame verbatim}; start/end/out not applied."""
         ds = self.dataset(dataset)
         syms = [str(s) for s in symbols]
         if not syms:
-            raise ValueError(f"nd.{self.name}.{self.primary_method or dataset}(...) needs "
-                             f"at least one symbol/id/ticker")
+            raise ValueError(
+                f"nd.{self.name}.{self.primary_method or dataset}(...) needs "
+                f"at least one symbol/id/ticker"
+            )
         prefix = "raw/" if raw else ""
         frames = {
-            s: cached(f"{self.name}/{dataset}/{prefix}{self._cache_symbol(dataset, s)}",
-                      lambda s=s: self._fetch_symbol(dataset, s, raw=raw), refresh=refresh)
+            s: cached(
+                f"{self.name}/{dataset}/{prefix}{self._cache_symbol(dataset, s)}",
+                lambda s=s: self._fetch_symbol(dataset, s, raw=raw),
+                refresh=refresh,
+            )
             for s in syms
         }
         if raw:

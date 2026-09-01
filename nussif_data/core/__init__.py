@@ -3,5 +3,13 @@ from .http import BearerAuth, HttpClient, NoAuth, QueryKeyAuth
 from .registry import ConnectorRegistry
 from .schema import Schema
 
-__all__ = ["Connector", "Dataset", "Schema", "HttpClient",
-           "NoAuth", "QueryKeyAuth", "BearerAuth", "ConnectorRegistry"]
+__all__ = [
+    "BearerAuth",
+    "Connector",
+    "ConnectorRegistry",
+    "Dataset",
+    "HttpClient",
+    "NoAuth",
+    "QueryKeyAuth",
+    "Schema",
+]

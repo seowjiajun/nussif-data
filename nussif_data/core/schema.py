@@ -7,6 +7,7 @@ Column spec values:
     "string"    -> object/string
     "*"         -> any remaining columns must match this (wildcard)
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -26,7 +27,7 @@ _FAMILIES = {
 
 @dataclass
 class Schema:
-    columns: dict[str, str] = field(default_factory=dict)   # name -> family; "*" allowed as a key
+    columns: dict[str, str] = field(default_factory=dict)  # name -> family; "*" allowed as a key
 
     def validate(self, df: pd.DataFrame, *, where: str = "") -> pd.DataFrame:
         tag = f" [{where}]" if where else ""
@@ -51,8 +52,16 @@ class Schema:
 # reusable dataset schemas
 VOL_INDEX_WIDE = Schema({"date": "datetime", "*": "float"})
 MACRO_WIDE = Schema({"date": "datetime", "*": "float"})
-BARS_LONG = Schema({
-    "date": "datetime", "ticker": "string",
-    "open": "float", "high": "float", "low": "float", "close": "float",
-    "volume": "float", "vwap": "float", "trades": "float",
-})
+BARS_LONG = Schema(
+    {
+        "date": "datetime",
+        "ticker": "string",
+        "open": "float",
+        "high": "float",
+        "low": "float",
+        "close": "float",
+        "volume": "float",
+        "vwap": "float",
+        "trades": "float",
+    }
+)

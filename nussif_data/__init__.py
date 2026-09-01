@@ -21,6 +21,7 @@ HttpClient (rate limit, retry/backoff, auth, logging). catalog.yaml = connection
 config; core/ = machinery; connectors/ = one class per vendor. Add a source:
 subclass Connector, add a catalog block, register it below.
 """
+
 from __future__ import annotations
 
 from . import _catalog
@@ -29,16 +30,35 @@ from .cache import cache_dir, clear_cache
 from .connectors import CboeConnector, FredConnector, MassiveConnector
 from .core import ConnectorRegistry
 from .core.errors import (
-    AuthError, DatasetNotFound, NotEntitled, NussifDataError,
-    RateLimited, SchemaError, UpstreamError,
+    AuthError,
+    DatasetNotFound,
+    NotEntitled,
+    NussifDataError,
+    RateLimited,
+    SchemaError,
+    UpstreamError,
 )
 
 __version__ = "0.2.0"
 __all__ = [
-    "cboe", "fred", "massive", "catalog", "connectors", "REGISTRY",
-    "set_key", "get_key", "cache_dir", "clear_cache",
-    "NussifDataError", "AuthError", "NotEntitled", "RateLimited",
-    "UpstreamError", "SchemaError", "DatasetNotFound", "__version__",
+    "REGISTRY",
+    "AuthError",
+    "DatasetNotFound",
+    "NotEntitled",
+    "NussifDataError",
+    "RateLimited",
+    "SchemaError",
+    "UpstreamError",
+    "__version__",
+    "cache_dir",
+    "catalog",
+    "cboe",
+    "clear_cache",
+    "connectors",
+    "fred",
+    "get_key",
+    "massive",
+    "set_key",
 ]
 
 _cfg = _catalog.connectors()

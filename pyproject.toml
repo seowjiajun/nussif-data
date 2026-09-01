@@ -31,3 +31,16 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "PIE", "RUF"]
+ignore = [
+    "E501",    # line length — the formatter handles wrapping
+    "SIM105",  # contextlib.suppress vs try/except/pass — try/except reads fine
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402", "B011"]
+
+[tool.ruff.format]
+quote-style = "double"

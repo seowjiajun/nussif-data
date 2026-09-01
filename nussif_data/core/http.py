@@ -4,6 +4,7 @@ limiting, retry/backoff, pluggable auth, secret-redacting request logs.
 Replaces the hand-rolled urllib loops that used to live in each vendor module.
 Stdlib only.
 """
+
 from __future__ import annotations
 
 import json as _json
@@ -13,7 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Callable
+from collections.abc import Callable
 
 from .errors import AuthError, NotEntitled, RateLimited, UpstreamError
 
@@ -42,7 +43,7 @@ class QueryKeyAuth:
     def apply(self, url: str, params: dict, headers: dict) -> None:
         try:
             params[self.param] = self.value()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise AuthError(str(e)) from e
 
 
@@ -53,14 +54,22 @@ class BearerAuth:
     def apply(self, url: str, params: dict, headers: dict) -> None:
         try:
             headers["Authorization"] = f"Bearer {self.value()}"
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise AuthError(str(e)) from e
 
 
 # --- client ---------------------------------------------------------------
 class HttpClient:
-    def __init__(self, base_url: str = "", *, rate_limit_rpm: float | None = None,
-                 retries: int = 4, timeout: int = 45, auth=None, name: str = "http"):
+    def __init__(
+        self,
+        base_url: str = "",
+        *,
+        rate_limit_rpm: float | None = None,
+        retries: int = 4,
+        timeout: int = 45,
+        auth=None,
+        name: str = "http",
+    ):
         self.base_url = base_url.rstrip("/")
         self.retries = retries
         self.timeout = timeout
@@ -82,8 +91,9 @@ class HttpClient:
             return path_or_url
         return f"{self.base_url}{path_or_url}"
 
-    def request(self, path_or_url: str, params: dict | None = None,
-                headers: dict | None = None) -> bytes:
+    def request(
+        self, path_or_url: str, params: dict | None = None, headers: dict | None = None
+    ) -> bytes:
         params = dict(params or {})
         headers = {"User-Agent": "nussif-data/0.2", **(headers or {})}
         url = self._url(path_or_url)
@@ -98,13 +108,24 @@ class HttpClient:
                 req = urllib.request.Request(url, headers={**headers, "Connection": "close"})
                 with urllib.request.urlopen(req, timeout=self.timeout) as r:
                     body = r.read()
-                log.debug("%s GET %s -> %s %.0fms", self.name, _redact(url), r.status,
-                          (time.monotonic() - t0) * 1000)
+                log.debug(
+                    "%s GET %s -> %s %.0fms",
+                    self.name,
+                    _redact(url),
+                    r.status,
+                    (time.monotonic() - t0) * 1000,
+                )
                 return body
             except urllib.error.HTTPError as e:
                 body = e.read()[:300]
-                log.debug("%s GET %s -> %s (attempt %d) %s", self.name, _redact(url),
-                          e.code, attempt + 1, body[:120])
+                log.debug(
+                    "%s GET %s -> %s (attempt %d) %s",
+                    self.name,
+                    _redact(url),
+                    e.code,
+                    attempt + 1,
+                    body[:120],
+                )
                 if e.code == 401:
                     raise AuthError(f"{self.name}: 401 {body!r}") from e
                 if e.code == 403:
@@ -120,8 +141,13 @@ class HttpClient:
                     continue
                 raise UpstreamError(f"{self.name}: {e.code} {body!r}") from e
             except (urllib.error.URLError, TimeoutError, OSError) as e:
-                log.debug("%s GET %s -> transport err (attempt %d): %s", self.name,
-                          _redact(url), attempt + 1, e)
+                log.debug(
+                    "%s GET %s -> transport err (attempt %d): %s",
+                    self.name,
+                    _redact(url),
+                    attempt + 1,
+                    e,
+                )
                 time.sleep(1.5 * (attempt + 1))
                 last = UpstreamError(f"{self.name}: transport error: {e}")
         raise last

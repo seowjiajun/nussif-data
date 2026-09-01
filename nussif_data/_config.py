@@ -2,6 +2,7 @@
 
 Order: environment variable  ->  ~/.config/nussif-data/keys.env  ->  set_key().
 """
+
 from __future__ import annotations
 
 import os
@@ -28,7 +29,8 @@ def set_key(vendor: str, value: str, persist: bool = True) -> None:
     name = _env_name(vendor)
     lines = []
     if os.path.exists(KEYS_FILE):
-        lines = [ln for ln in open(KEYS_FILE) if not ln.strip().startswith(name + "=")]
+        with open(KEYS_FILE) as fh:
+            lines = [ln for ln in fh if not ln.strip().startswith(name + "=")]
     lines.append(f"{name}={value}\n")
     with open(KEYS_FILE, "w") as fh:
         fh.writelines(lines)
@@ -42,10 +44,11 @@ def get_key(vendor: str) -> str:
     if os.environ.get(name):
         return os.environ[name].strip()
     if os.path.exists(KEYS_FILE):
-        for ln in open(KEYS_FILE):
-            k, _, v = ln.strip().partition("=")
-            if k in (name, "API_KEY"):
-                return v.strip().strip('"').strip("'")
+        with open(KEYS_FILE) as fh:
+            for ln in fh:
+                k, _, v = ln.strip().partition("=")
+                if k in (name, "API_KEY"):
+                    return v.strip().strip('"').strip("'")
     raise RuntimeError(
         f"no API key for {vendor!r}. Set ${name}, add it to {KEYS_FILE}, "
         f"or call nussif_data.set_key({vendor!r}, '...')."

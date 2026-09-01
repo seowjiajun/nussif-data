@@ -1,4 +1,5 @@
 """CBOE connector -- volatility index EOD levels, one <SYM>_History.csv per symbol."""
+
 from __future__ import annotations
 
 import io
@@ -37,21 +38,26 @@ class CboeConnector(Connector):
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
-        self.http = HttpClient(auth=NoAuth(), name="cboe",
-                               rate_limit_rpm=cfg.get("rate_limit_rpm"))
+        self.http = HttpClient(auth=NoAuth(), name="cboe", rate_limit_rpm=cfg.get("rate_limit_rpm"))
 
     def datasets(self) -> list[Dataset]:
-        return [Dataset("vol_index", VOL_INDEX_WIDE,
-                        description="CBOE volatility index EOD close levels "
-                                    "(VIX, VIX1D/9D/3M/6M, VVIX, VXN, RVX, VXTLT, GVZ, OVX, SKEW, …)")]
+        return [
+            Dataset(
+                "vol_index",
+                VOL_INDEX_WIDE,
+                description="CBOE volatility index EOD close levels "
+                "(VIX, VIX1D/9D/3M/6M, VVIX, VXN, RVX, VXTLT, GVZ, OVX, SKEW, …)",
+            )
+        ]
 
     # -- dataset accessor --
     def vol_index(self, *symbols, start=None, end=None, refresh=False, out=None, raw=False):
         """CBOE vol-index EOD levels.
         raw=False -> wide frame (date + one close col per symbol).
         raw=True  -> {symbol: History CSV verbatim (DATE, OPEN, HIGH, LOW, CLOSE)}."""
-        return self.fetch("vol_index", symbols, start=start, end=end,
-                          refresh=refresh, out=out, raw=raw)
+        return self.fetch(
+            "vol_index", symbols, start=start, end=end, refresh=refresh, out=out, raw=raw
+        )
 
     def _fetch_symbol(self, dataset: str, symbol: str, raw: bool = False) -> pd.DataFrame:
         d = self.cfg["datasets"][dataset]

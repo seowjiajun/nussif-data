@@ -2,9 +2,10 @@
 route fetch calls. First connector registered for a dataset wins; a preference /
 fallback policy slots in here when a second provider for the same dataset exists.
 """
+
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import pandas as pd
 
@@ -67,5 +68,5 @@ class ConnectorRegistry:
 def _safe_health(c: Connector) -> bool:
     try:
         return bool(c.health())
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False

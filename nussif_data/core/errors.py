@@ -1,4 +1,5 @@
 """Typed errors so callers can react to *why* a fetch failed."""
+
 from __future__ import annotations
 
 

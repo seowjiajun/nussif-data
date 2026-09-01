@@ -3,6 +3,7 @@
 Cache location: $NUSSIF_DATA_CACHE, else ~/.cache/nussif-data/. Keys may contain
 '/' -> nested dirs (e.g. "cboe/VIX", "fred/BAA10Y", "massive/bars/SPY").
 """
+
 from __future__ import annotations
 
 import os
@@ -54,7 +55,7 @@ def clear_cache(prefix: str | None = None) -> int:
             if not f.endswith(".parquet"):
                 continue
             rel = os.path.relpath(os.path.join(dirpath, f), root)
-            key = rel[:-len(".parquet")].replace(os.sep, "/")
+            key = rel[: -len(".parquet")].replace(os.sep, "/")
             if prefix is None or key.startswith(prefix):
                 os.remove(os.path.join(dirpath, f))
                 n += 1

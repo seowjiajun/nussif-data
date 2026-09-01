@@ -47,8 +47,10 @@ def write_frame(df: pd.DataFrame, path) -> str:
     p = str(path)
     ext = os.path.splitext(p)[1].lower().lstrip(".")
     if ext not in _WRITERS:
-        raise ValueError(f"unsupported output extension {ext!r}; use one of "
-                         f"{sorted(set(_WRITERS) - {'pq', 'ft'})}")
+        raise ValueError(
+            f"unsupported output extension {ext!r}; use one of "
+            f"{sorted(set(_WRITERS) - {'pq', 'ft'})}"
+        )
     d = os.path.dirname(p)
     if d:
         os.makedirs(d, exist_ok=True)
