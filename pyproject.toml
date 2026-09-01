@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nussif-data"
+version = "0.1.0"
+description = "One-line access to CBOE, FRED and Massive market data — NUSSIF's yfinance"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "pyarrow>=14",
+    "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.4"]
+
+[tool.setuptools.packages.find]
+include = ["nussif_data*"]
+
+[tool.setuptools.package-data]
+nussif_data = ["catalog.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

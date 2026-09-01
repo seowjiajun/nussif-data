@@ -1,0 +1,55 @@
+# nussif-data catalog — what's fetchable. Vendor-neutral: it lists datasets and
+# their access shape; callers choose which symbols/series/tickers they want.
+# Handlers (nussif_data/<vendor>.py) own auth, retries and format quirks.
+
+cboe:
+  daily_prices:                 # -> nussif_data.cboe()   EOD OHLC time series
+    base_url: "https://cdn.cboe.com/api/global/us_indices/daily_prices/"
+    suffix: "_History.csv"
+    # default bundle for nussif_data.cboe() with no args. Any CBOE index that
+    # publishes <SYM>_History.csv also works if passed explicitly.
+    symbols:
+      - VIX1D
+      - VIX9D
+      - VIX
+      - VIX3M
+      - VIX6M
+      - VVIX
+      - VXN
+      - RVX
+      - VXTLT
+      - GVZ
+      - OVX
+      - SKEW
+  # vx_futures:                 # -> nussif_data.cboe.vx_term_structure() (TODO)
+  #   url_template: "https://cdn.cboe.com/api/global/delayed_quotes/futures/{sym}.json"
+  #   note: "public JSON is a snapshot; historical settlements need CFE data files"
+
+fred:
+  # &cosd forces full history. Note: ICE BofA OAS series (BAMLH0A0HYM2, ...) are
+  # licence-capped to ~3y on the public CSV regardless of cosd.
+  url_template: "https://fred.stlouisfed.org/graph/fredgraph.csv?id={id}&cosd={history_start}"
+  history_start: "1970-01-01"
+  # aliases for the default bundle (nussif_data.fred() with no args). Callers may
+  # also pass ANY raw FRED series id.
+  series:
+    baa10y: BAA10Y
+    aaa10y: AAA10Y
+    nfci:   NFCI
+    anfci:  ANFCI
+    sofr:   SOFR
+    dgs3mo: DGS3MO
+    dgs2:   DGS2
+    dgs10:  DGS10
+    t10y3m: T10Y3M
+    t10y2y: T10Y2Y
+
+massive:
+  base_url: "https://api.massive.com"
+  rate_limit_rpm: 40
+  daily_bars:                   # -> nussif_data.bars()   split/div-adjusted daily OHLCV
+    endpoint: "/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
+    params: {adjusted: "true", sort: "asc", limit: "50000"}
+    history_start: "2003-01-01"
+    trim_gap_days: 15           # drop pre-gap vendor stubs (e.g. Massive AAPL/QQQ holes)
+    default_tickers: [SPY, QQQ, IWM, DIA, TLT, GLD, HYG, LQD]
