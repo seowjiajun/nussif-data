@@ -35,3 +35,16 @@ connectors:
         params: {adjusted: "true", sort: "asc", limit: "50000"}
         history_start: "2003-01-01"
         trim_gap_days: 15
+
+  alphavantage:
+    auth:
+      type: query_key
+      param: apikey
+      vendor: alphavantage         # -> nussif_data._config.get_key("alphavantage")
+    base_url: "https://www.alphavantage.co"
+    rate_limit_rpm: 5              # free tier is 25 requests / DAY -- pace hard
+    datasets:
+      option_chain:                 # -> nussif_data.alphavantage.option_chain("SPY", date="2024-06-03")
+        endpoint: "/query"
+        params: {function: HISTORICAL_OPTIONS}
+        history_start: "2008-01-01"  # one request = one full EOD chain for a (symbol, date)

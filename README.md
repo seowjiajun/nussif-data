@@ -9,6 +9,7 @@ import nussif_data as nd
 nd.cboe.vol_index("VIX", "VIX3M", "VXTLT")   # or  nd.cboe("VIX", "VIX3M")
 nd.fred.series("BAA10Y", "NFCI", "UNRATE")   # or  nd.fred("BAA10Y", "NFCI")
 nd.massive.bars("SPY", "QQQ", start="2015")  # or  nd.massive("SPY", "QQQ")
+nd.alphavantage.option_chain("SPY", date="2024-06-03")   # full EOD option chain (one request)
 
 nd.massive.bars("SPY", "QQQ", field="close") # WIDE by ticker (matches cboe/fred shape)
 nd.cboe.vol_index("VIX", raw=True)           # {symbol: vendor frame verbatim}
@@ -85,6 +86,7 @@ except nd.UpstreamError:  ...   # 5xx / network / bad response
 | `vol_index` | `nd.cboe.vol_index(*symbols)` | any CBOE index publishing `<SYM>_History.csv` (VIX, VIX1D/9D/3M/6M, VVIX, VXN, RVX, VXTLT, GVZ, OVX, SKEW, …) — pass the ones you want |
 | `macro_series` | `nd.fred.series(*ids)` | any FRED id, FRED's own symbology — no invented aliases. ICE BofA OAS series are licence-capped to ~3y on the public CSV — use Moody's `BAA10Y` |
 | `daily_bars` | `nd.massive.bars(*tickers)` | adjusted daily OHLCV back to ~2003; multi-year vendor history holes auto-trimmed |
+| `option_chain` | `nd.alphavantage.option_chain(*symbols, date=)` | full EOD chain per `(symbol, date)` in **one** request — bid/ask/sizes, IV, greeks, OI. `date` back to 2008; omit for latest. OPRA-sourced quotes; IV/greeks are Alpha Vantage's own (recompute for the deep wings). **Free tier: 25 requests/day** — pace + cache. Needs `ALPHAVANTAGE_API_KEY`. |
 
 **Finding a symbol:**
 - **FRED** — search [fred.stlouisfed.org/search](https://fred.stlouisfed.org/search) by name; the id is in the result and in the series page URL (e.g. `.../series/BAA10Y` → `BAA10Y`).

@@ -9,6 +9,7 @@ vendor's primary dataset.
     nd.fred.series("BAA10Y", "NFCI")      # or  nd.fred("BAA10Y", "NFCI")
     nd.massive.bars("SPY", "QQQ")         # or  nd.massive("SPY", "QQQ")
     nd.massive.bars("SPY", "QQQ", field="close")   # WIDE by ticker
+    nd.alphavantage.option_chain("SPY", date="2024-06-03")   # full EOD chain
 
     nd.set_key("massive", "…")            # or $MASSIVE_API_KEY / ~/.config/nussif-data/keys.env
     nd.catalog()      nd.connectors()     nd.clear_cache("cboe")
@@ -27,7 +28,12 @@ from __future__ import annotations
 from . import _catalog
 from ._config import get_key, set_key
 from .cache import cache_dir, clear_cache
-from .connectors import CboeConnector, FredConnector, MassiveConnector
+from .connectors import (
+    AlphaVantageConnector,
+    CboeConnector,
+    FredConnector,
+    MassiveConnector,
+)
 from .core import ConnectorRegistry
 from .core.errors import (
     AuthError,
@@ -39,7 +45,7 @@ from .core.errors import (
     UpstreamError,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     "REGISTRY",
     "AuthError",
@@ -50,6 +56,7 @@ __all__ = [
     "SchemaError",
     "UpstreamError",
     "__version__",
+    "alphavantage",
     "cache_dir",
     "catalog",
     "cboe",
@@ -67,9 +74,10 @@ _cfg = _catalog.connectors()
 cboe = CboeConnector(_cfg["cboe"])
 fred = FredConnector(_cfg["fred"])
 massive = MassiveConnector(_cfg["massive"])
+alphavantage = AlphaVantageConnector(_cfg["alphavantage"])
 
 REGISTRY = ConnectorRegistry()
-for _c in (cboe, fred, massive):
+for _c in (cboe, fred, massive, alphavantage):
     REGISTRY.register(_c)
 
 

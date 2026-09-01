@@ -1,4 +1,4 @@
-"""API-key resolution for vendors that need one (currently just Massive).
+"""API-key resolution for vendors that need one (Massive, Alpha Vantage).
 
 Order: environment variable  ->  ~/.config/nussif-data/keys.env  ->  set_key().
 """
@@ -10,8 +10,8 @@ import os
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "nussif-data")
 KEYS_FILE = os.path.join(CONFIG_DIR, "keys.env")
 
-# vendor -> env var name
-_ENV = {"massive": "MASSIVE_API_KEY"}
+# vendor -> env var name (default is <VENDOR>_API_KEY)
+_ENV = {"massive": "MASSIVE_API_KEY", "alphavantage": "ALPHAVANTAGE_API_KEY"}
 _MEM: dict[str, str] = {}
 
 

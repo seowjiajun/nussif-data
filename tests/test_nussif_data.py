@@ -24,7 +24,7 @@ def test_catalog_and_connectors():
     assert cat["daily_bars"]["connector"] == "massive"
     assert cat["daily_bars"]["needs_key"] is True
     assert cat["vol_index"]["description"].startswith("CBOE")
-    assert set(nd.connectors()) == {"cboe", "fred", "massive"}
+    assert set(nd.connectors()) == {"cboe", "fred", "massive", "alphavantage"}
 
 
 def test_registry_unknown_dataset():
@@ -213,3 +213,80 @@ def test_flatten_symbols_varargs_and_list():
     assert _util.flatten_symbols((("A", "B"),)) == ["A", "B"]
     assert set(_util.flatten_symbols(({"A", "B"},))) == {"A", "B"}
     assert _util.flatten_symbols(("A",)) == ["A"]  # lone string -> one symbol, not chars
+
+
+# --- alphavantage connector (offline) --------------------------------------
+def test_alphavantage_in_registry():
+    assert nd.catalog()["option_chain"]["connector"] == "alphavantage"
+    assert nd.catalog()["option_chain"]["needs_key"] is True
+    assert callable(nd.alphavantage.option_chain)
+
+
+def test_alphavantage_parse_chain(monkeypatch):
+    canned = {
+        "endpoint": "Historical Options",
+        "data": [
+            {
+                "contractID": "SPY240621C00530000",
+                "symbol": "SPY",
+                "expiration": "2024-06-21",
+                "strike": "530.00",
+                "type": "call",
+                "last": "1.23",
+                "mark": "1.25",
+                "bid": "1.20",
+                "bid_size": "10",
+                "ask": "1.30",
+                "ask_size": "8",
+                "volume": "100",
+                "open_interest": "5000",
+                "date": "2024-06-03",
+                "implied_volatility": "0.12",
+                "delta": "0.30",
+                "gamma": "0.02",
+                "theta": "-0.05",
+                "vega": "0.10",
+                "rho": "0.01",
+            },
+            {
+                "contractID": "SPY240621P00520000",
+                "symbol": "SPY",
+                "expiration": "2024-06-21",
+                "strike": "520.00",
+                "type": "put",
+                "last": "0.80",
+                "mark": "0.82",
+                "bid": "0.78",
+                "bid_size": "4",
+                "ask": "0.86",
+                "ask_size": "6",
+                "volume": "50",
+                "open_interest": "3000",
+                "date": "2024-06-03",
+                "implied_volatility": "0.14",
+                "delta": "-0.25",
+                "gamma": "0.02",
+                "theta": "-0.04",
+                "vega": "0.09",
+                "rho": "-0.01",
+            },
+        ],
+    }
+    monkeypatch.setattr(nd.alphavantage.http, "get_json", lambda *a, **k: canned)
+    df = nd.alphavantage._fetch_chain("SPY", "2024-06-03")
+    assert list(df["type"]) == ["put", "call"]  # sorted by strike then type
+    assert df["strike"].dtype.kind == "f" and df["date"].dtype.kind == "M"
+    assert df.loc[df.type == "call", "bid"].iloc[0] == 1.20
+
+
+def test_alphavantage_rate_limit_maps_to_RateLimited(monkeypatch):
+    note = {"Information": "We have detected your API key ... 25 requests per day."}
+    monkeypatch.setattr(nd.alphavantage.http, "get_json", lambda *a, **k: note)
+    with pytest.raises(nd.RateLimited):
+        nd.alphavantage._fetch_chain("SPY", "2024-06-03")
+
+
+def test_alphavantage_empty_is_upstream(monkeypatch):
+    monkeypatch.setattr(nd.alphavantage.http, "get_json", lambda *a, **k: {"data": []})
+    with pytest.raises(nd.UpstreamError):
+        nd.alphavantage._fetch_chain("SPY", "1990-01-01")
