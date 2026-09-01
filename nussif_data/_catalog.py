@@ -14,15 +14,12 @@ def load() -> dict:
         return yaml.safe_load(fh)
 
 
-def section(vendor: str) -> dict:
-    d = load()
-    if vendor not in d:
-        raise KeyError(f"no '{vendor}' section in {_PATH}")
-    return d[vendor]
+def connectors() -> dict:
+    return load()["connectors"]
 
 
-def endpoint(vendor: str, name: str) -> dict:
-    v = section(vendor)
-    if name not in v:
-        raise KeyError(f"no endpoint '{name}' under '{vendor}' in {_PATH}")
-    return v[name]
+def connector_cfg(name: str) -> dict:
+    c = connectors()
+    if name not in c:
+        raise KeyError(f"no connector '{name}' in {_PATH}")
+    return c[name]

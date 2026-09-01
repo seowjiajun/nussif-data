@@ -1,55 +1,51 @@
-# nussif-data catalog — what's fetchable. Vendor-neutral: it lists datasets and
-# their access shape; callers choose which symbols/series/tickers they want.
-# Handlers (nussif_data/<vendor>.py) own auth, retries and format quirks.
+# nussif-data catalog — connectors and the datasets they serve.
+# The *what* (URLs, symbols, params, auth shape). Connectors own the *how*.
 
-cboe:
-  daily_prices:                 # -> nussif_data.cboe()   EOD OHLC time series
-    base_url: "https://cdn.cboe.com/api/global/us_indices/daily_prices/"
-    suffix: "_History.csv"
-    # default bundle for nussif_data.cboe() with no args. Any CBOE index that
-    # publishes <SYM>_History.csv also works if passed explicitly.
-    symbols:
-      - VIX1D
-      - VIX9D
-      - VIX
-      - VIX3M
-      - VIX6M
-      - VVIX
-      - VXN
-      - RVX
-      - VXTLT
-      - GVZ
-      - OVX
-      - SKEW
-  # vx_futures:                 # -> nussif_data.cboe.vx_term_structure() (TODO)
-  #   url_template: "https://cdn.cboe.com/api/global/delayed_quotes/futures/{sym}.json"
-  #   note: "public JSON is a snapshot; historical settlements need CFE data files"
+connectors:
 
-fred:
-  # &cosd forces full history. Note: ICE BofA OAS series (BAMLH0A0HYM2, ...) are
-  # licence-capped to ~3y on the public CSV regardless of cosd.
-  url_template: "https://fred.stlouisfed.org/graph/fredgraph.csv?id={id}&cosd={history_start}"
-  history_start: "1970-01-01"
-  # aliases for the default bundle (nussif_data.fred() with no args). Callers may
-  # also pass ANY raw FRED series id.
-  series:
-    baa10y: BAA10Y
-    aaa10y: AAA10Y
-    nfci:   NFCI
-    anfci:  ANFCI
-    sofr:   SOFR
-    dgs3mo: DGS3MO
-    dgs2:   DGS2
-    dgs10:  DGS10
-    t10y3m: T10Y3M
-    t10y2y: T10Y2Y
+  cboe:
+    auth: none
+    datasets:
+      vol_index:                      # -> nussif_data.cboe()
+        base_url: "https://cdn.cboe.com/api/global/us_indices/daily_prices/"
+        suffix: "_History.csv"
+        # default bundle for cboe() with no args; any index publishing
+        # <SYM>_History.csv also works if named explicitly.
+        default_symbols:
+          [VIX1D, VIX9D, VIX, VIX3M, VIX6M, VVIX, VXN, RVX, VXTLT, GVZ, OVX, SKEW]
 
-massive:
-  base_url: "https://api.massive.com"
-  rate_limit_rpm: 40
-  daily_bars:                   # -> nussif_data.bars()   split/div-adjusted daily OHLCV
-    endpoint: "/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
-    params: {adjusted: "true", sort: "asc", limit: "50000"}
-    history_start: "2003-01-01"
-    trim_gap_days: 15           # drop pre-gap vendor stubs (e.g. Massive AAPL/QQQ holes)
-    default_tickers: [SPY, QQQ, IWM, DIA, TLT, GLD, HYG, LQD]
+  fred:
+    auth: none
+    rate_limit_rpm: 90               # fredgraph.csv 404s under burst -> pace it
+    datasets:
+      macro_series:                   # -> nussif_data.fred()
+        url_template: "https://fred.stlouisfed.org/graph/fredgraph.csv?id={id}&cosd={history_start}"
+        history_start: "1970-01-01"
+        # aliases for the default bundle; callers may also pass any raw FRED id.
+        # ICE BofA OAS series are licence-capped to ~3y on the public CSV -> use Moody's.
+        aliases:
+          baa10y: BAA10Y
+          aaa10y: AAA10Y
+          nfci:   NFCI
+          anfci:  ANFCI
+          sofr:   SOFR
+          dgs3mo: DGS3MO
+          dgs2:   DGS2
+          dgs10:  DGS10
+          t10y3m: T10Y3M
+          t10y2y: T10Y2Y
+
+  massive:
+    auth:
+      type: query_key
+      param: apiKey
+      vendor: massive               # -> nussif_data._config.get_key("massive")
+    base_url: "https://api.massive.com"
+    rate_limit_rpm: 40              # shared key -> keep low
+    datasets:
+      daily_bars:                     # -> nussif_data.bars()
+        endpoint: "/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
+        params: {adjusted: "true", sort: "asc", limit: "50000"}
+        history_start: "2003-01-01"
+        trim_gap_days: 15
+        default_symbols: [SPY, QQQ, IWM, DIA, TLT, GLD, HYG, LQD]
