@@ -1,21 +1,25 @@
-"""nussif-data — one-line access to CBOE, FRED and Massive market data.
+"""nussif-data — one-line access to multiple market-data sources.
+
+Vendor-namespaced: nd.<vendor>.<dataset>(...), or nd.<vendor>(...) for the
+vendor's primary dataset.
 
     import nussif_data as nd
 
-    nd.cboe("VIX", "VIX3M", "VXTLT")        # CBOE vol indices, wide by date
-    nd.fred("BAA10Y", "NFCI", "UNRATE")     # any FRED series (aliases or raw ids)
-    nd.bars("SPY", "QQQ", start="2015")     # adjusted daily OHLCV, tidy long
+    nd.cboe.vol_index("VIX", "VIX3M")     # or  nd.cboe("VIX", "VIX3M")
+    nd.fred.series("BAA10Y", "NFCI")      # or  nd.fred("BAA10Y", "NFCI")
+    nd.massive.bars("SPY", "QQQ")         # or  nd.massive("SPY", "QQQ")
+    nd.massive.bars("SPY", "QQQ", field="close")   # WIDE by ticker
 
-    nd.set_key("massive", "…")              # or $MASSIVE_API_KEY / ~/.config/nussif-data/keys.env
-    nd.catalog()                            # datasets -> connector
-    nd.connectors()                         # connector health / datasets
-    nd.clear_cache("massive")               # drop cached parquet
+    nd.set_key("massive", "…")            # or $MASSIVE_API_KEY / ~/.config/nussif-data/keys.env
+    nd.catalog()      nd.connectors()     nd.clear_cache("cboe")
 
-Architecture: a `ConnectorRegistry` of vendor `Connector`s, each backed by a
-shared `HttpClient` (rate limit, retry/backoff, auth, logging). `catalog.yaml`
-holds connection config; `core/` holds the machinery; `connectors/` holds one
-class per vendor. Add a vendor = a `Connector` subclass + a catalog block +
-`REGISTRY.register(...)` below.
+Every accessor takes start=, end=, refresh=, out= (write to .parquet/.csv/.json/
+.feather). Results cache per symbol under $NUSSIF_DATA_CACHE (default ~/.cache/nussif-data/).
+
+Architecture: a ConnectorRegistry of vendor Connectors, each backed by a shared
+HttpClient (rate limit, retry/backoff, auth, logging). catalog.yaml = connection
+config; core/ = machinery; connectors/ = one class per vendor. Add a source:
+subclass Connector, add a catalog block, register it below.
 """
 from __future__ import annotations
 
@@ -31,32 +35,22 @@ from .core.errors import (
 
 __version__ = "0.2.0"
 __all__ = [
-    "cboe", "fred", "bars", "catalog", "connectors", "REGISTRY",
+    "cboe", "fred", "massive", "catalog", "connectors", "REGISTRY",
     "set_key", "get_key", "cache_dir", "clear_cache",
     "NussifDataError", "AuthError", "NotEntitled", "RateLimited",
     "UpstreamError", "SchemaError", "DatasetNotFound", "__version__",
 ]
 
 _cfg = _catalog.connectors()
+
+# vendor namespaces — the public API surface
+cboe = CboeConnector(_cfg["cboe"])
+fred = FredConnector(_cfg["fred"])
+massive = MassiveConnector(_cfg["massive"])
+
 REGISTRY = ConnectorRegistry()
-REGISTRY.register(CboeConnector(_cfg["cboe"]))
-REGISTRY.register(FredConnector(_cfg["fred"]))
-REGISTRY.register(MassiveConnector(_cfg["massive"]))
-
-
-def cboe(*symbols, start=None, end=None, refresh=False):
-    """CBOE vol-index EOD levels -> wide frame (date + one col per symbol)."""
-    return REGISTRY.fetch("vol_index", symbols, start=start, end=end, refresh=refresh)
-
-
-def fred(*ids, start=None, end=None, refresh=False):
-    """FRED series -> wide frame. Args are catalog aliases or raw FRED ids."""
-    return REGISTRY.fetch("macro_series", ids, start=start, end=end, refresh=refresh)
-
-
-def bars(*tickers, start=None, end=None, refresh=False):
-    """Split/div-adjusted daily OHLCV (Massive) -> long tidy frame."""
-    return REGISTRY.fetch("daily_bars", tickers, start=start, end=end, refresh=refresh)
+for _c in (cboe, fred, massive):
+    REGISTRY.register(_c)
 
 
 def catalog() -> dict:
@@ -65,5 +59,5 @@ def catalog() -> dict:
 
 
 def connectors() -> dict:
-    """connector -> {datasets, healthy}."""
+    """connector -> {datasets}."""
     return REGISTRY.list()

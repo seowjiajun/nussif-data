@@ -16,6 +16,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7", "ruff>=0.4"]
 
+[project.scripts]
+nussif-data = "nussif_data.cli:main"
+
 [tool.setuptools.packages.find]
 include = ["nussif_data*"]
 

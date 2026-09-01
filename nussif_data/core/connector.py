@@ -28,6 +28,16 @@ class Dataset:
 
 class Connector(ABC):
     name: str = "connector"
+    primary_method: str | None = None   # method name for the nd.<vendor>(...) shorthand
+
+    def __call__(self, *symbols, **kw):
+        """nd.<vendor>(...) == nd.<vendor>.<primary dataset method>(...)."""
+        if self.primary_method is None:
+            raise TypeError(
+                f"nd.{self.name} has no default dataset — call one explicitly, "
+                f"e.g. nd.{self.name}.{self.datasets()[0].name}(...)"
+            )
+        return getattr(self, self.primary_method)(*symbols, **kw)
 
     # -- declare what you serve --
     @abstractmethod
@@ -41,7 +51,9 @@ class Connector(ABC):
 
     # -- the one method a connector must implement --
     @abstractmethod
-    def _fetch_symbol(self, dataset: str, symbol: str) -> pd.DataFrame: ...
+    def _fetch_symbol(self, dataset: str, symbol: str, raw: bool = False) -> pd.DataFrame:
+        """One symbol of one dataset. raw=True -> the vendor's frame verbatim
+        (original column names, no coercion, no reshaping)."""
 
     # -- optional hooks --
     def _cache_symbol(self, dataset: str, symbol: str) -> str:
@@ -58,16 +70,26 @@ class Connector(ABC):
 
     # -- the template method callers hit (via the registry) --
     def fetch(self, dataset: str, symbols: Sequence[str] = (), *,
-              start=None, end=None, refresh: bool = False) -> pd.DataFrame:
+              start=None, end=None, refresh: bool = False, out=None, raw: bool = False):
+        """raw=False -> one tidy, schema-validated, date-sliced frame.
+        raw=True  -> dict {symbol: vendor frame verbatim}; start/end/out not applied."""
         ds = self.dataset(dataset)
         syms = [str(s) for s in symbols] or list(ds.default_symbols)
         if not syms:
             raise ValueError(f"{self.name}.{dataset}: no symbols and no default_symbols")
-        frames = [
-            cached(f"{self.name}/{dataset}/{self._cache_symbol(dataset, s)}",
-                   lambda s=s: self._fetch_symbol(dataset, s), refresh=refresh)
+        prefix = "raw/" if raw else ""
+        frames = {
+            s: cached(f"{self.name}/{dataset}/{prefix}{self._cache_symbol(dataset, s)}",
+                      lambda s=s: self._fetch_symbol(dataset, s, raw=raw), refresh=refresh)
             for s in syms
-        ]
-        df = self._combine(dataset, frames)
+        }
+        if raw:
+            if out:
+                raise ValueError("out= is not supported with raw=True (per-symbol payloads differ)")
+            return dict(frames)
+        df = self._combine(dataset, list(frames.values()))
         df = ds.schema.validate(df, where=f"{self.name}.{dataset}")
-        return _util.slice_dates(df, start, end)
+        df = _util.slice_dates(df, start, end)
+        if out:
+            _util.write_frame(df, out)
+        return df

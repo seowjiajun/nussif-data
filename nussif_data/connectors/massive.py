@@ -14,6 +14,8 @@ from ..core import Connector, Dataset, HttpClient, QueryKeyAuth
 from ..core.errors import UpstreamError
 from ..core.schema import BARS_LONG
 
+BAR_FIELDS = ("open", "high", "low", "close", "volume", "vwap", "trades")
+
 _RENAME = {"o": "open", "h": "high", "l": "low", "c": "close",
            "v": "volume", "vw": "vwap", "n": "trades"}
 _COLS = ["date", "ticker", "open", "high", "low", "close", "volume", "vwap", "trades"]
@@ -21,6 +23,7 @@ _COLS = ["date", "ticker", "open", "high", "low", "close", "volume", "vwap", "tr
 
 class MassiveConnector(Connector):
     name = "massive"
+    primary_method = "bars"
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -39,10 +42,36 @@ class MassiveConnector(Connector):
                         description="split/div-adjusted daily OHLCV",
                         default_symbols=d["default_symbols"])]
 
+    # -- dataset accessor --
+    def bars(self, *tickers, start=None, end=None, refresh=False, out=None, field=None, raw=False):
+        """Adjusted daily OHLCV.
+
+        raw=True    -> {ticker: Massive payload verbatim (t, o, h, l, c, v, vw, n)}.
+        field=None  -> long tidy frame (date, ticker, open, high, low, close,
+          volume, vwap, trades).
+        field="close" (etc.) -> WIDE: date + one column per ticker (matches
+          nd.cboe / nd.fred shape).
+        """
+        if raw:
+            if field:
+                raise ValueError("field= is not compatible with raw=True")
+            return self.fetch("daily_bars", tickers, start=start, end=end, refresh=refresh, raw=True)
+        if field is not None and field not in BAR_FIELDS:
+            raise ValueError(f"field must be one of {BAR_FIELDS}")
+        df = self.fetch("daily_bars", tickers, start=start, end=end, refresh=refresh,
+                        out=None if field else out)
+        if field is None:
+            return df
+        wide = df.pivot(index="date", columns="ticker", values=field).reset_index()
+        wide.columns.name = None
+        if out:
+            _util.write_frame(wide, out)
+        return wide
+
     def _cache_symbol(self, dataset: str, symbol: str) -> str:
         return symbol.upper()
 
-    def _fetch_symbol(self, dataset: str, symbol: str) -> pd.DataFrame:
+    def _fetch_symbol(self, dataset: str, symbol: str, raw: bool = False) -> pd.DataFrame:
         d = self.cfg["datasets"][dataset]
         tk = symbol.upper()
         path = d["endpoint"].format(ticker=tk, start=d["history_start"], end=date.today())
@@ -50,7 +79,10 @@ class MassiveConnector(Connector):
         rows = j.get("results") or []
         if not rows:
             raise UpstreamError(f"massive: no bars for {tk!r}")
-        df = pd.DataFrame(rows).rename(columns=_RENAME)
+        df = pd.DataFrame(rows)
+        if raw:
+            return df                                       # t, o, h, l, c, v, vw, n verbatim
+        df = df.rename(columns=_RENAME)
         df["date"] = pd.to_datetime(df["t"], unit="ms").dt.normalize()   # 05:00 UTC -> date
         df["ticker"] = tk
         return df[_COLS]

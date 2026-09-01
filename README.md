@@ -1,18 +1,33 @@
 # nussif-data
 
-One-line access to **CBOE**, **FRED** and **Massive** market data. NUSSIF's `yfinance`.
+Vendor-namespaced access to multiple market-data sources — CBOE, FRED, Massive
+(yfinance and others slot in the same way).
 
 ```python
 import nussif_data as nd
 
-nd.cboe("VIX", "VIX3M", "VXTLT")          # CBOE vol indices, wide by date
-nd.fred("BAA10Y", "NFCI", "UNRATE")       # any FRED series (aliases or raw ids)
-nd.bars("SPY", "QQQ", start="2015")       # split/div-adjusted daily OHLCV (tidy long)
+nd.cboe.vol_index("VIX", "VIX3M", "VXTLT")   # or  nd.cboe("VIX", "VIX3M")
+nd.fred.series("BAA10Y", "NFCI", "UNRATE")   # or  nd.fred("BAA10Y", "NFCI")
+nd.massive.bars("SPY", "QQQ", start="2015")  # or  nd.massive("SPY", "QQQ")
+
+nd.massive.bars("SPY", "QQQ", field="close") # WIDE by ticker (matches cboe/fred shape)
+nd.cboe.vol_index("VIX", raw=True)           # {symbol: vendor frame verbatim}
 ```
 
-- Every getter takes `start=`, `end=`, `refresh=`.
-- Results are cached per symbol to `~/.cache/nussif-data/` (override `$NUSSIF_DATA_CACHE`).
+- `nd.<vendor>.<dataset>(...)`; `nd.<vendor>(...)` is shorthand for the vendor's primary dataset.
+- Every accessor takes `start=`, `end=`, `refresh=`, `out=` (write to `.parquet/.csv/.json/.feather`),
+  `raw=` (skip renaming/coercion/reshaping — returns `{symbol: frame}`).
+- Results cache per symbol to `~/.cache/nussif-data/` (override `$NUSSIF_DATA_CACHE`).
 - `nd.catalog()` — dataset → connector; `nd.connectors()` — connectors & their datasets.
+
+## CLI
+```bash
+nussif-data cboe VIX VIX3M --start 2015 -o vix.parquet
+nussif-data fred BAA10Y NFCI --start 2010 --end 2020 -o macro.csv
+nussif-data massive SPY QQQ TLT --start 2020 --field close -o closes.parquet
+nussif-data massive SPY --raw --head 5
+nussif-data catalog
+```
 
 ## Install
 ```bash
@@ -56,7 +71,7 @@ catalog entry; if the response shape differs, that's all in `_fetch_symbol` /
 ## Errors
 ```python
 try:
-    nd.bars("SPY")
+    nd.massive.bars("SPY")
 except nd.AuthError:      ...   # no / rejected key
 except nd.NotEntitled:    ...   # plan doesn't include it (403)
 except nd.RateLimited:    ...   # 429, retries exhausted
@@ -66,6 +81,6 @@ except nd.UpstreamError:  ...   # 5xx / network / bad response
 ## What's fetchable
 | dataset | getter | notes |
 |---|---|---|
-| `vol_index` | `nd.cboe(*symbols)` | any CBOE index publishing `<SYM>_History.csv` (VIX, VIX1D/9D/3M/6M, VVIX, VXN, RVX, VXTLT, GVZ, OVX, SKEW, …) |
-| `macro_series` | `nd.fred(*ids)` | catalog aliases **or** any raw FRED id. ICE BofA OAS series are licence-capped to ~3y on the public CSV — use Moody's `BAA10Y` |
-| `daily_bars` | `nd.bars(*tickers)` | adjusted daily OHLCV back to ~2003; multi-year vendor history holes auto-trimmed |
+| `vol_index` | `nd.cboe.vol_index(*symbols)` | any CBOE index publishing `<SYM>_History.csv` (VIX, VIX1D/9D/3M/6M, VVIX, VXN, RVX, VXTLT, GVZ, OVX, SKEW, …) |
+| `macro_series` | `nd.fred.series(*ids)` | catalog aliases **or** any raw FRED id. ICE BofA OAS series are licence-capped to ~3y on the public CSV — use Moody's `BAA10Y` |
+| `daily_bars` | `nd.massive.bars(*tickers)` | adjusted daily OHLCV back to ~2003; multi-year vendor history holes auto-trimmed |

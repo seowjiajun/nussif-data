@@ -122,3 +122,52 @@ def test_missing_massive_key_is_clear(monkeypatch):
     _config._MEM.clear()
     with pytest.raises(RuntimeError, match="no API key for 'massive'"):
         _config.get_key("massive")
+
+
+# --- file export + CLI ------------------------------------------------
+def test_write_frame_roundtrip(tmp_path):
+    from nussif_data._util import write_frame
+    df = pd.DataFrame({"date": pd.to_datetime(["2020-01-01", "2020-01-02"]), "VIX": [13.0, 14.0]})
+    p1 = write_frame(df, tmp_path / "x.parquet")
+    pd.testing.assert_frame_equal(df, pd.read_parquet(p1))
+    p2 = write_frame(df, tmp_path / "x.csv")
+    pd.testing.assert_frame_equal(df, pd.read_csv(p2, parse_dates=["date"]))
+
+
+def test_write_frame_rejects_unknown_ext(tmp_path):
+    from nussif_data._util import write_frame
+    with pytest.raises(ValueError, match="unsupported output extension"):
+        write_frame(pd.DataFrame({"a": [1]}), tmp_path / "x.txt")
+
+
+def test_bars_field_validation():
+    with pytest.raises(ValueError, match="field must be one of"):
+        nd.massive.bars("SPY", field="bogus")
+
+
+def test_vendor_namespaces_and_shorthand():
+    # namespaced accessor and the nd.<vendor>(...) primary shorthand both exist
+    assert callable(nd.cboe.vol_index) and callable(nd.fred.series) and callable(nd.massive.bars)
+    assert callable(nd.cboe) and callable(nd.fred) and callable(nd.massive)
+    assert nd.cboe.primary_method == "vol_index" and nd.massive.primary_method == "bars"
+
+
+def test_cli_catalog(capsys):
+    from nussif_data.cli import main
+    assert main(["catalog"]) == 0
+    assert "vol_index" in capsys.readouterr().out
+
+
+def test_cli_parser_has_end_and_field():
+    from nussif_data.cli import _build_parser
+    p = _build_parser()
+    ns = p.parse_args(["massive", "SPY", "--start", "2020", "--end", "2021", "--field", "close", "-o", "x.parquet"])
+    assert (ns.start, ns.end, ns.field, ns.out) == ("2020", "2021", "close", "x.parquet")
+
+
+def test_raw_parsers_keep_vendor_columns():
+    from nussif_data.connectors.cboe import _read_history
+    raw = (b"Cboe VIX History\nDATE,OPEN,HIGH,LOW,CLOSE\n01/02/2020,13,14,12.5,13.78\n")
+    df = _read_history(raw)
+    assert list(df.columns) == ["DATE", "OPEN", "HIGH", "LOW", "CLOSE"]   # not renamed to date/VIX
+    assert df["CLOSE"].iloc[0] == 13.78
