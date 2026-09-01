@@ -82,5 +82,19 @@ except nd.UpstreamError:  ...   # 5xx / network / bad response
 | dataset | getter | notes |
 |---|---|---|
 | `vol_index` | `nd.cboe.vol_index(*symbols)` | any CBOE index publishing `<SYM>_History.csv` (VIX, VIX1D/9D/3M/6M, VVIX, VXN, RVX, VXTLT, GVZ, OVX, SKEW, …) — pass the ones you want |
-| `macro_series` | `nd.fred.series(*ids)` | any FRED id (or a friendly alias like `baa10y`). ICE BofA OAS series are licence-capped to ~3y on the public CSV — use Moody's `BAA10Y` |
+| `macro_series` | `nd.fred.series(*ids)` | any FRED id, FRED's own symbology — no invented aliases. ICE BofA OAS series are licence-capped to ~3y on the public CSV — use Moody's `BAA10Y` |
 | `daily_bars` | `nd.massive.bars(*tickers)` | adjusted daily OHLCV back to ~2003; multi-year vendor history holes auto-trimmed |
+
+**Finding a symbol:**
+- **FRED** — search [fred.stlouisfed.org/search](https://fred.stlouisfed.org/search) by name; the id is in the result and in the series page URL (e.g. `.../series/BAA10Y` → `BAA10Y`).
+- **CBOE** — [cboe.com/tradable-products/vix/vix-historical-data](https://www.cboe.com/tradable-products/vix/vix-historical-data/) lists most downloadable volatility indices (VIX, VVIX, VIX9D, OVX, GVZ, …) with their `_History.csv` links — not a complete catalog (no single one exists), but it's the same file shape `vol_index` consumes. Other indices (VIX3M, VIX6M, VXN, RVX, VXTLT, SKEW, …) are on each index's own [dashboard](https://www.cboe.com/us/indices/dashboard/vix/) page under "Historical Data."
+
+### FRED ids this project commonly pulls
+
+| id | series |
+|---|---|
+| `BAA10Y` / `AAA10Y` | Moody's Baa / Aaa corporate yield − 10y Treasury |
+| `NFCI` / `ANFCI` | Chicago Fed financial conditions (weekly) |
+| `SOFR` | Secured Overnight Financing Rate |
+| `DGS3MO` / `DGS2` / `DGS10` | 3-month / 2y / 10y Treasury yield |
+| `T10Y3M` / `T10Y2Y` | 10y − 3m / 10y − 2y term spread |

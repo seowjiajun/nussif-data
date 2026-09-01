@@ -15,21 +15,12 @@ connectors:
     rate_limit_rpm: 90               # fredgraph.csv 404s under burst -> pace it
     datasets:
       macro_series:                   # -> nussif_data.fred.series("BAA10Y", "UNRATE")
+        # FRED's own series ids, verbatim -- no invented aliases. Look one up at
+        # https://fred.stlouisfed.org, or see README.md for ones this project uses.
         url_template: "https://fred.stlouisfed.org/graph/fredgraph.csv?id={id}&cosd={history_start}"
         history_start: "1970-01-01"
-        # friendly names for common series; callers may also pass any raw FRED id.
-        # ICE BofA OAS series are licence-capped to ~3y on the public CSV -> use Moody's.
-        aliases:
-          baa10y: BAA10Y
-          aaa10y: AAA10Y
-          nfci:   NFCI
-          anfci:  ANFCI
-          sofr:   SOFR
-          dgs3mo: DGS3MO
-          dgs2:   DGS2
-          dgs10:  DGS10
-          t10y3m: T10Y3M
-          t10y2y: T10Y2Y
+        # ICE BofA OAS series (BAMLH0A0HYM2 etc.) are licence-capped to ~3y on the
+        # public CSV regardless of cosd -- use Moody's BAA10Y/AAA10Y instead.
 
   massive:
     auth:
