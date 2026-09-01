@@ -24,7 +24,7 @@ def test_catalog_and_connectors():
     assert cat["daily_bars"]["connector"] == "massive"
     assert cat["daily_bars"]["needs_key"] is True
     assert cat["vol_index"]["description"].startswith("CBOE")
-    assert set(nd.connectors()) == {"cboe", "fred", "massive", "alphavantage"}
+    assert set(nd.connectors()) == {"cboe", "fred", "massive", "alphavantage", "databento"}
 
 
 def test_registry_unknown_dataset():
@@ -218,6 +218,7 @@ def test_flatten_symbols_varargs_and_list():
 # --- alphavantage connector (offline) --------------------------------------
 def test_alphavantage_in_registry():
     assert nd.catalog()["option_chain"]["connector"] == "alphavantage"
+    assert set(nd.catalog()["option_chain"]["providers"]) == {"alphavantage", "databento"}
     assert nd.catalog()["option_chain"]["needs_key"] is True
     assert callable(nd.alphavantage.option_chain)
 
@@ -297,3 +298,71 @@ def test_alphavantage_empty_is_upstream(monkeypatch):
     monkeypatch.setattr(nd.alphavantage.http, "get_json", lambda *a, **k: {"data": []})
     with pytest.raises(nd.UpstreamError):
         nd.alphavantage._fetch_chain("SPY", "1990-01-01")
+
+
+# --- databento connector (offline) --------------------------------------
+def test_databento_registered():
+    assert "databento" in nd.connectors()
+    assert callable(nd.databento.option_chain)
+
+
+def test_databento_close_utc_handles_dst():
+    from nussif_data.connectors.databento import _close_utc
+
+    edt = _close_utc("2024-06-03", "America/New_York", "16:00")  # EDT -> 20:00Z
+    est = _close_utc("2024-01-03", "America/New_York", "16:00")  # EST -> 21:00Z
+    assert (edt.hour, est.hour) == (20, 21)
+
+
+def test_databento_filter_moneyness_and_dte():
+    from nussif_data.connectors.databento import DatabentoConnector
+
+    defn = pd.DataFrame(
+        {
+            "raw_symbol": [f"O{i}" for i in range(6)],
+            "instrument_id": range(6),
+            "strike_price": [80.0, 95.0, 100.0, 105.0, 130.0, 100.0],
+            "expiration": pd.to_datetime(
+                ["2024-06-21", "2024-06-21", "2024-06-21", "2024-06-21", "2024-06-21", "2025-06-20"]
+            ).tz_localize("UTC"),
+            "instrument_class": ["P", "P", "C", "C", "C", "C"],
+        }
+    )
+    out = DatabentoConnector._filter(defn, "2024-06-03", spot=100.0, mny=0.10, mdte=150)
+    assert set(out["strike"]) == {95.0, 100.0, 105.0}  # 80/130 out of band; 2025 expiry > 150 DTE
+
+
+def test_databento_assemble_to_canonical():
+    from nussif_data.connectors.databento import DatabentoConnector
+    from nussif_data.core.schema import OPTION_CHAIN
+
+    defn = pd.DataFrame(
+        {
+            "raw_symbol": ["A", "B"],
+            "instrument_id": [1, 2],
+            "strike": [100.0, 105.0],
+            "expiration": pd.to_datetime(["2024-06-21", "2024-06-21"]),
+            "instrument_class": ["C", "P"],
+        }
+    )
+    close = pd.Timestamp("2024-06-03T20:00:00Z")
+    quotes = pd.DataFrame(
+        {
+            "instrument_id": [1, 1, 2],
+            "ts_event": [
+                close - pd.Timedelta(minutes=2),
+                close - pd.Timedelta(minutes=1),
+                close - pd.Timedelta(minutes=1),
+            ],
+            "bid_px_00": [1.20, 1.25, 0.80],
+            "ask_px_00": [1.30, 1.35, 0.90],
+            "bid_sz_00": [10, 12, 4],
+            "ask_sz_00": [8, 9, 6],
+        }
+    )
+    spec = {"close_tz": "America/New_York", "close_time": "16:00"}
+    out = DatabentoConnector._assemble("SPY", "2024-06-03", defn, quotes, spec)
+    OPTION_CHAIN.validate(out, where="test")
+    assert list(out["right"]) == ["C", "P"]
+    assert out.loc[out.right == "C", "bid"].iloc[0] == 1.25  # latest pre-close quote for id 1
+    assert (out["symbol"] == "SPY").all()

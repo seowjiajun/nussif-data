@@ -65,3 +65,18 @@ BARS_LONG = Schema(
         "trades": "float",
     }
 )
+
+# canonical option-chain slice -- one row per contract; every provider maps to this.
+# iv / greeks / open_interest are optional (present only if the vendor supplies them).
+OPTION_CHAIN = Schema(
+    {
+        "symbol": "string",
+        "date": "datetime",
+        "expiration": "datetime",
+        "strike": "float",
+        "right": "string",  # 'C' | 'P'
+        "bid": "float",
+        "ask": "float",
+        "*": "float",
+    }
+)

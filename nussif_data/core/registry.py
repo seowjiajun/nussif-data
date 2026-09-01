@@ -54,14 +54,17 @@ class ConnectorRegistry:
         return out
 
     def catalog(self) -> dict:
+        """dataset -> {connector (primary = first registered), providers, needs_key, description}."""
         out = {}
-        for c in self._by_name.values():
-            for d in c.datasets():
-                out[d.name] = {
-                    "connector": c.name,
-                    "needs_key": d.needs_key,
-                    "description": d.description,
-                }
+        for name in self._dataset_providers:
+            primary = self._by_name[self._dataset_providers[name][0]]
+            d = primary.dataset(name)
+            out[name] = {
+                "connector": primary.name,
+                "providers": list(self._dataset_providers[name]),
+                "needs_key": d.needs_key,
+                "description": d.description,
+            }
         return out
 
 
