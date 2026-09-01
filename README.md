@@ -86,7 +86,7 @@ except nd.UpstreamError:  ...   # 5xx / network / bad response
 | `vol_index` | `nd.cboe.vol_index(*symbols)` | any CBOE index publishing `<SYM>_History.csv` (VIX, VIX1D/9D/3M/6M, VVIX, VXN, RVX, VXTLT, GVZ, OVX, SKEW, …) — pass the ones you want |
 | `macro_series` | `nd.fred.series(*ids)` | any FRED id, FRED's own symbology — no invented aliases. ICE BofA OAS series are licence-capped to ~3y on the public CSV — use Moody's `BAA10Y` |
 | `daily_bars` | `nd.massive.bars(*tickers)` | adjusted daily OHLCV back to ~2003; multi-year vendor history holes auto-trimmed |
-| `option_chain` | `nd.alphavantage.option_chain(*symbols, date=)` | full EOD chain per `(symbol, date)` in **one** request — bid/ask/sizes, IV, greeks, OI. `date` back to 2008; omit for latest. OPRA-sourced quotes; IV/greeks are Alpha Vantage's own (recompute for the deep wings). **Free tier: 25 requests/day** — pace + cache. Needs `ALPHAVANTAGE_API_KEY`. |
+| `option_chain` | `nd.alphavantage.option_chain(*symbols, date=)` | full EOD chain per `(symbol, date)` in **one** request — bid/ask/sizes, IV, greeks, OI. `date` back to 2008; omit for latest. OPRA-sourced quotes; IV/greeks are Alpha Vantage's own (recompute for the deep wings). **`HISTORICAL_OPTIONS` is a PREMIUM endpoint** — free keys raise `NotEntitled`. Premium ~$50/mo (75 req/min) → full backfill in minutes, then downgrade. Needs `ALPHAVANTAGE_API_KEY`. |
 
 **Finding a symbol:**
 - **FRED** — search [fred.stlouisfed.org/search](https://fred.stlouisfed.org/search) by name; the id is in the result and in the series page URL (e.g. `.../series/BAA10Y` → `BAA10Y`).

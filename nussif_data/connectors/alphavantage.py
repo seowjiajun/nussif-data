@@ -1,6 +1,10 @@
 """Alpha Vantage connector -- HISTORICAL_OPTIONS: one request returns the whole
-EOD option chain for a (symbol, date). Free tier = 25 requests / DAY, so this
-paces hard and caches every (symbol, date) forever.
+EOD option chain for a (symbol, date).
+
+NOTE: HISTORICAL_OPTIONS is a PREMIUM Alpha Vantage endpoint (free-tier keys get
+'premium endpoint' -> NotEntitled). Premium $50/mo = 75 req/min: a full
+historical backfill runs in minutes, then downgrade. Every (symbol, date) is
+cached forever.
 
 An option chain is a 2-D object (many contracts per request), not a 1-D time
 series, so this connector doesn't use the base `fetch()` template -- it exposes
@@ -15,7 +19,7 @@ import pandas as pd
 from .._config import get_key
 from ..cache import cached
 from ..core import Connector, Dataset, HttpClient, QueryKeyAuth
-from ..core.errors import AuthError, RateLimited, UpstreamError
+from ..core.errors import AuthError, NotEntitled, RateLimited, UpstreamError
 from ..core.schema import Schema
 
 OPTION_CHAIN = Schema(
@@ -144,8 +148,13 @@ def _raise_for_av(j: dict) -> None:
         if not msg:
             continue
         low = msg.lower()
-        if "rate limit" in low or "25 requests per day" in low or "premium" in low:
+        if "premium endpoint" in low or "premium plan" in low:
+            raise NotEntitled(
+                f"alphavantage: HISTORICAL_OPTIONS needs a premium key "
+                f"(https://www.alphavantage.co/premium/). {msg}"
+            )
+        if "rate limit" in low or "requests per day" in low or "call frequency" in low:
             raise RateLimited(f"alphavantage: {msg}")
-        if "apikey" in low or "api key" in low:
+        if "apikey" in low or "api key" in low or "invalid api call" in low:
             raise AuthError(f"alphavantage: {msg}")
         raise UpstreamError(f"alphavantage: {msg}")

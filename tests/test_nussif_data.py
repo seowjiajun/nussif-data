@@ -279,8 +279,15 @@ def test_alphavantage_parse_chain(monkeypatch):
     assert df.loc[df.type == "call", "bid"].iloc[0] == 1.20
 
 
-def test_alphavantage_rate_limit_maps_to_RateLimited(monkeypatch):
-    note = {"Information": "We have detected your API key ... 25 requests per day."}
+def test_alphavantage_premium_maps_to_NotEntitled(monkeypatch):
+    note = {"Information": "Thank you for using Alpha Vantage! This is a premium endpoint."}
+    monkeypatch.setattr(nd.alphavantage.http, "get_json", lambda *a, **k: note)
+    with pytest.raises(nd.NotEntitled, match="premium key"):
+        nd.alphavantage._fetch_chain("SPY", "2024-06-03")
+
+
+def test_alphavantage_daily_cap_maps_to_RateLimited(monkeypatch):
+    note = {"Note": "You have exceeded the standard API call frequency of 25 requests per day."}
     monkeypatch.setattr(nd.alphavantage.http, "get_json", lambda *a, **k: note)
     with pytest.raises(nd.RateLimited):
         nd.alphavantage._fetch_chain("SPY", "2024-06-03")

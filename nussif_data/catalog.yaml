@@ -42,7 +42,7 @@ connectors:
       param: apikey
       vendor: alphavantage         # -> nussif_data._config.get_key("alphavantage")
     base_url: "https://www.alphavantage.co"
-    rate_limit_rpm: 5              # free tier is 25 requests / DAY -- pace hard
+    rate_limit_rpm: 30            # HISTORICAL_OPTIONS is premium-only; premium is 75+ req/min
     datasets:
       option_chain:                 # -> nussif_data.alphavantage.option_chain("SPY", date="2024-06-03")
         endpoint: "/query"
