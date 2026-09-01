@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 
 import pandas as pd
+
+
+def flatten_symbols(args: Sequence) -> list[str]:
+    """Accept either varargs ("A", "B") or a single list/tuple/set passed as the
+    sole positional argument (["A", "B"]) -- never explode a lone string into
+    its characters."""
+    if len(args) == 1 and isinstance(args[0], (list, tuple, set, frozenset)):
+        args = args[0]
+    return [str(s) for s in args]
 
 
 def to_ts(x) -> pd.Timestamp | None:

@@ -84,7 +84,7 @@ class Connector(ABC):
         """raw=False -> one tidy, schema-validated, date-sliced frame.
         raw=True  -> dict {symbol: vendor frame verbatim}; start/end/out not applied."""
         ds = self.dataset(dataset)
-        syms = [str(s) for s in symbols]
+        syms = _util.flatten_symbols(symbols)
         if not syms:
             raise ValueError(
                 f"nd.{self.name}.{self.primary_method or dataset}(...) needs "

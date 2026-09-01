@@ -15,6 +15,7 @@ nd.cboe.vol_index("VIX", raw=True)           # {symbol: vendor frame verbatim}
 ```
 
 - `nd.<vendor>.<dataset>(...)`; `nd.<vendor>(...)` is shorthand for the vendor's primary dataset.
+- Symbols as varargs (`nd.fred.series("BAA10Y", "NFCI")`) or a single list (`nd.fred.series(ids)`) — both work.
 - Every accessor takes `start=`, `end=`, `refresh=`, `out=` (write to `.parquet/.csv/.json/.feather`),
   `raw=` (skip renaming/coercion/reshaping — returns `{symbol: frame}`).
 - Results cache per symbol to `~/.cache/nussif-data/` (override `$NUSSIF_DATA_CACHE`).

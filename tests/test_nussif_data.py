@@ -204,3 +204,12 @@ def test_raw_parsers_keep_vendor_columns():
     df = _read_history(raw)
     assert list(df.columns) == ["DATE", "OPEN", "HIGH", "LOW", "CLOSE"]  # not renamed to date/VIX
     assert df["CLOSE"].iloc[0] == 13.78
+
+
+# --- flatten_symbols: *args or a single list, never explode a lone string ---
+def test_flatten_symbols_varargs_and_list():
+    assert _util.flatten_symbols(("A", "B")) == ["A", "B"]
+    assert _util.flatten_symbols((["A", "B"],)) == ["A", "B"]
+    assert _util.flatten_symbols((("A", "B"),)) == ["A", "B"]
+    assert set(_util.flatten_symbols(({"A", "B"},))) == {"A", "B"}
+    assert _util.flatten_symbols(("A",)) == ["A"]  # lone string -> one symbol, not chars
