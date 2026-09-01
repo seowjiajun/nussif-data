@@ -54,7 +54,7 @@ for _c in (cboe, fred, massive):
 
 
 def catalog() -> dict:
-    """dataset -> {connector, needs_key, default_symbols, description}."""
+    """dataset -> {connector, needs_key, symbols, description}."""
     return REGISTRY.catalog()
 
 

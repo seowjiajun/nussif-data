@@ -41,10 +41,9 @@ class CboeConnector(Connector):
                                rate_limit_rpm=cfg.get("rate_limit_rpm"))
 
     def datasets(self) -> list[Dataset]:
-        d = self.cfg["datasets"]["vol_index"]
         return [Dataset("vol_index", VOL_INDEX_WIDE,
-                        description="CBOE volatility index EOD close levels",
-                        default_symbols=d["default_symbols"])]
+                        description="CBOE volatility index EOD close levels "
+                                    "(VIX, VIX1D/9D/3M/6M, VVIX, VXN, RVX, VXTLT, GVZ, OVX, SKEW, …)")]
 
     # -- dataset accessor --
     def vol_index(self, *symbols, start=None, end=None, refresh=False, out=None, raw=False):

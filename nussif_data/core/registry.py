@@ -59,7 +59,6 @@ class ConnectorRegistry:
                 out[d.name] = {
                     "connector": c.name,
                     "needs_key": d.needs_key,
-                    "default_symbols": d.default_symbols,
                     "description": d.description,
                 }
         return out

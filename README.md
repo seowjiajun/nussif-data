@@ -81,6 +81,6 @@ except nd.UpstreamError:  ...   # 5xx / network / bad response
 ## What's fetchable
 | dataset | getter | notes |
 |---|---|---|
-| `vol_index` | `nd.cboe.vol_index(*symbols)` | any CBOE index publishing `<SYM>_History.csv` (VIX, VIX1D/9D/3M/6M, VVIX, VXN, RVX, VXTLT, GVZ, OVX, SKEW, …) |
-| `macro_series` | `nd.fred.series(*ids)` | catalog aliases **or** any raw FRED id. ICE BofA OAS series are licence-capped to ~3y on the public CSV — use Moody's `BAA10Y` |
+| `vol_index` | `nd.cboe.vol_index(*symbols)` | any CBOE index publishing `<SYM>_History.csv` (VIX, VIX1D/9D/3M/6M, VVIX, VXN, RVX, VXTLT, GVZ, OVX, SKEW, …) — pass the ones you want |
+| `macro_series` | `nd.fred.series(*ids)` | any FRED id (or a friendly alias like `baa10y`). ICE BofA OAS series are licence-capped to ~3y on the public CSV — use Moody's `BAA10Y` |
 | `daily_bars` | `nd.massive.bars(*tickers)` | adjusted daily OHLCV back to ~2003; multi-year vendor history holes auto-trimmed |

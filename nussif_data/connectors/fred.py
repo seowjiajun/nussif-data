@@ -24,8 +24,7 @@ class FredConnector(Connector):
 
     def datasets(self) -> list[Dataset]:
         return [Dataset("macro_series", MACRO_WIDE,
-                        description="FRED macro/funding series (any id)",
-                        default_symbols=list(self._alias2id.keys()))]
+                        description="FRED macro/funding series (any id)")]
 
     # -- dataset accessor --
     def series(self, *ids, start=None, end=None, refresh=False, out=None, raw=False):

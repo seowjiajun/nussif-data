@@ -34,7 +34,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     for name, help_ in _HELP.items():
         sp = sub.add_parser(name, help=help_)
-        sp.add_argument("symbols", nargs="*", help="symbols / ids / tickers (default: catalog bundle)")
+        sp.add_argument("symbols", nargs="+", help="symbols / ids / tickers (>= 1)")
         sp.add_argument("--start", help="e.g. 2015, 2015-06, 2015-06-01")
         sp.add_argument("--end", help="e.g. 2020-12-31")
         sp.add_argument("--refresh", action="store_true", help="refetch from vendor (ignore cache)")

@@ -18,12 +18,11 @@ from .schema import Schema
 
 class Dataset:
     def __init__(self, name: str, schema: Schema, *, needs_key: bool = False,
-                 description: str = "", default_symbols: Sequence[str] = ()):
+                 description: str = ""):
         self.name = name
         self.schema = schema
         self.needs_key = needs_key
         self.description = description
-        self.default_symbols = list(default_symbols)
 
 
 class Connector(ABC):
@@ -74,9 +73,10 @@ class Connector(ABC):
         """raw=False -> one tidy, schema-validated, date-sliced frame.
         raw=True  -> dict {symbol: vendor frame verbatim}; start/end/out not applied."""
         ds = self.dataset(dataset)
-        syms = [str(s) for s in symbols] or list(ds.default_symbols)
+        syms = [str(s) for s in symbols]
         if not syms:
-            raise ValueError(f"{self.name}.{dataset}: no symbols and no default_symbols")
+            raise ValueError(f"nd.{self.name}.{self.primary_method or dataset}(...) needs "
+                             f"at least one symbol/id/ticker")
         prefix = "raw/" if raw else ""
         frames = {
             s: cached(f"{self.name}/{dataset}/{prefix}{self._cache_symbol(dataset, s)}",

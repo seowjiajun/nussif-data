@@ -37,10 +37,8 @@ class MassiveConnector(Connector):
         )
 
     def datasets(self) -> list[Dataset]:
-        d = self.cfg["datasets"]["daily_bars"]
         return [Dataset("daily_bars", BARS_LONG, needs_key=True,
-                        description="split/div-adjusted daily OHLCV",
-                        default_symbols=d["default_symbols"])]
+                        description="split/div-adjusted daily OHLCV")]
 
     # -- dataset accessor --
     def bars(self, *tickers, start=None, end=None, refresh=False, out=None, field=None, raw=False):

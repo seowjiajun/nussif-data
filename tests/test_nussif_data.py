@@ -22,7 +22,7 @@ def test_catalog_and_connectors():
     assert cat["vol_index"]["connector"] == "cboe"
     assert cat["daily_bars"]["connector"] == "massive"
     assert cat["daily_bars"]["needs_key"] is True
-    assert "VIX" in cat["vol_index"]["default_symbols"]
+    assert cat["vol_index"]["description"].startswith("CBOE")
     assert set(nd.connectors()) == {"cboe", "fred", "massive"}
 
 
@@ -150,6 +150,9 @@ def test_vendor_namespaces_and_shorthand():
     assert callable(nd.cboe.vol_index) and callable(nd.fred.series) and callable(nd.massive.bars)
     assert callable(nd.cboe) and callable(nd.fred) and callable(nd.massive)
     assert nd.cboe.primary_method == "vol_index" and nd.massive.primary_method == "bars"
+    import pytest as _pt
+    with _pt.raises(ValueError, match="needs at least one"):
+        nd.cboe.vol_index()
 
 
 def test_cli_catalog(capsys):
