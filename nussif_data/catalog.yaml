@@ -6,9 +6,8 @@ connectors:
   cboe:
     auth: none
     datasets:
-      vol_index:                      # -> nussif_data.cboe()
-        base_url: "https://cdn.cboe.com/api/global/us_indices/daily_prices/"
-        suffix: "_History.csv"
+      vol_index:                      # -> nussif_data.cboe.vol_index()
+        url_template: "https://cdn.cboe.com/api/global/us_indices/daily_prices/{symbol}_History.csv"
         # default bundle for cboe() with no args; any index publishing
         # <SYM>_History.csv also works if named explicitly.
         default_symbols:
