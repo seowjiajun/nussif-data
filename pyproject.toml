@@ -43,6 +43,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E402", "B011"]
+"scripts/*" = ["SIM105", "B904"]  # standalone prototype/ops scripts, not library code
 
 [tool.ruff.format]
 quote-style = "double"
