@@ -65,6 +65,21 @@ def test_schema_wildcard_dtype():
         s.validate(bad)
 
 
+def test_schema_date_family_normalises_to_naive_midnight():
+    s = Schema({"date": "date", "*": "float"})
+    # tz-aware, non-midnight (Massive stamps daily bars at 05:00 UTC) + a string date
+    raw = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2020-01-02 05:00", "2020-01-03 05:00"], utc=True),
+            "VIX": [13.0, 14.0],
+        }
+    )
+    out = s.validate(raw)
+    assert out["date"].dt.tz is None
+    assert (out["date"] == pd.to_datetime(["2020-01-02", "2020-01-03"])).all()
+    assert raw["date"].dt.tz is not None  # input not mutated
+
+
 # --- util -----------------------------------------------------------
 def test_slice_dates_loose_input():
     df = pd.DataFrame(
