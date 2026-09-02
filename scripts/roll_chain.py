@@ -39,27 +39,17 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT = os.path.dirname(_HERE)
 OUT_DIR = os.path.join(PROJECT, "data", "roll")
 OUT_PARQUET = os.path.join(OUT_DIR, f"{UNDERLIER}_chain.parquet")
-SECRETS_CANDIDATES = [
-    os.environ.get("MASSIVE_ENV_FILE"),
-    "/home/jseow/code/.secrets/massive.env",
-    os.path.join(PROJECT, "..", ".secrets", "massive.env"),
-]
 BASE = "https://api.massive.com"
 
 
 def load_key() -> str:
-    if os.environ.get("MASSIVE_API_KEY"):
-        return os.environ["MASSIVE_API_KEY"].strip()
-    for p in SECRETS_CANDIDATES:
-        if p and os.path.exists(p):
-            with open(p) as fh:
-                for line in fh:
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        k, _, v = line.partition("=")
-                        if k.strip() in ("MASSIVE_API_KEY", "API_KEY"):
-                            return v.strip().strip('"').strip("'")
-    sys.exit("no MASSIVE_API_KEY found")
+    # same resolution as the library: $MASSIVE_API_KEY -> ~/.config/nussif-data/keys.env
+    from nussif_data import get_key
+
+    try:
+        return get_key("massive")
+    except RuntimeError as e:
+        sys.exit(str(e))
 
 
 KEY = load_key()

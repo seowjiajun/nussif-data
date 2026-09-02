@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Probe the Massive market-data API to discover entitlements and coverage.
 
-Reads MASSIVE_API_KEY from ../.secrets/massive.env (or the env var), finds the working
-base URL + auth scheme, then exercises the endpoints we care about for the
-variance-risk-premium and skew-demand projects. Stdlib only.
+Reads the key via nussif_data.get_key ($MASSIVE_API_KEY or ~/.config/nussif-data/
+keys.env), finds the working base URL + auth scheme, then exercises the endpoints
+we care about for the variance-risk-premium and skew-demand projects.
 
 Usage:
     python3 scripts/discover_massive.py
@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
-import os
 import socket
 import sys
 import time
@@ -26,15 +25,6 @@ from datetime import date
 
 socket.setdefaulttimeout(8)  # bound EVERY socket op, incl. probes to dead hosts
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-# Look for the key file in a few sensible spots; env var wins, then explicit path,
-# then .secrets/ next to the repo root (../../) and next to the project (../).
-SECRETS_CANDIDATES = [
-    os.environ.get("MASSIVE_ENV_FILE"),
-    "/home/jseow/code/.secrets/massive.env",
-    os.path.join(_HERE, "..", "..", ".secrets", "massive.env"),
-    os.path.join(_HERE, "..", ".secrets", "massive.env"),
-]
 
 # Docs live at massive.com/docs/rest/... so api.massive.com is the overwhelming
 # favourite. Others are cheap fallbacks and are skipped fast if DNS fails.
@@ -72,27 +62,13 @@ def _add_query(url: str, params: dict) -> str:
 
 
 def load_key() -> str:
-    if os.environ.get("MASSIVE_API_KEY"):
-        return os.environ["MASSIVE_API_KEY"].strip()
-    for path in SECRETS_CANDIDATES:
-        if not path or not os.path.exists(path):
-            continue
-        with open(path) as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                k, _, v = line.partition("=")
-                if k.strip() in ("API_KEY", "MASSIVE_API_KEY"):
-                    print(f"key file: {path}")
-                    return v.strip().strip('"').strip("'")
-    searched = "\n  ".join(p for p in SECRETS_CANDIDATES if p)
-    sys.exit(
-        "No API key found. Searched:\n  " + searched + "\n\n"
-        "Create /home/jseow/code/.secrets/massive.env containing:\n"
-        "  MASSIVE_API_KEY=your_key_here\n"
-        "or export MASSIVE_API_KEY, or set MASSIVE_ENV_FILE=/path/to/file."
-    )
+    # same resolution as the library: $MASSIVE_API_KEY -> ~/.config/nussif-data/keys.env
+    from nussif_data import get_key
+
+    try:
+        return get_key("massive")
+    except RuntimeError as e:
+        sys.exit(str(e))
 
 
 class Resp:
