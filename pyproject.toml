@@ -32,6 +32,7 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+extend-exclude = ["*.md"]  # READMEs use hand-aligned sample code; keep ruff off them
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "PIE", "RUF"]
