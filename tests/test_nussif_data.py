@@ -130,9 +130,17 @@ def test_missing_massive_key_is_clear(monkeypatch):
     from nussif_data import _config
 
     monkeypatch.setattr(_config, "KEYS_FILE", os.path.join(tempfile.gettempdir(), "nope.env"))
-    _config._MEM.clear()
     with pytest.raises(RuntimeError, match="no API key for 'massive'"):
         _config.get_key("massive")
+
+
+def test_no_python_key_setter():
+    # keys must never be settable from Python -- env / keys.env only
+    import nussif_data as nd
+    from nussif_data import _config
+
+    assert not hasattr(nd, "set_key")
+    assert not hasattr(_config, "set_key")
 
 
 # --- file export + CLI ------------------------------------------------

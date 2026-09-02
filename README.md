@@ -38,11 +38,17 @@ pip install -e .
 ```
 
 ## Keys
-Only **Massive** needs one:
+**Massive**, **Alpha Vantage** and **Databento** each need one (CBOE / FRED are keyless).
+There is no Python setter — a key must never be a literal that could be committed.
+Provide it out of band:
 ```bash
-export MASSIVE_API_KEY=...
-# or:  python -c "import nussif_data as nd; nd.set_key('massive','...')"   # -> ~/.config/nussif-data/keys.env (600)
+export MASSIVE_API_KEY=...            # shell / CI secret
+# or persist without re-exporting:
+mkdir -p ~/.config/nussif-data
+printf 'MASSIVE_API_KEY=%s\n' "$KEY" >> ~/.config/nussif-data/keys.env
+chmod 600 ~/.config/nussif-data/keys.env
 ```
+Resolution order: `$<VENDOR>_API_KEY` → `~/.config/nussif-data/keys.env`.
 
 ## Architecture
 

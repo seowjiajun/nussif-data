@@ -1,5 +1,5 @@
 """Massive connector (Polygon.io-compatible). Split/div-adjusted daily bars,
-one ticker per REST call. Needs an API key (nussif_data.set_key / $MASSIVE_API_KEY).
+one ticker per REST call. Needs an API key ($MASSIVE_API_KEY or ~/.config/nussif-data/keys.env).
 Rate limiting + retry are handled by the shared HttpClient.
 """
 

@@ -12,8 +12,11 @@ vendor's primary dataset.
     nd.alphavantage.option_chain("SPY", date="2024-06-03")   # full EOD chain (premium)
     nd.databento.option_chain("SPY", date="2024-06-03", spot=530)   # OPRA EOD chain, 2013+
 
-    nd.set_key("massive", "…")            # or $MASSIVE_API_KEY / ~/.config/nussif-data/keys.env
     nd.catalog()      nd.connectors()     nd.clear_cache("cboe")
+
+Keys (Massive / Alpha Vantage / Databento): set $MASSIVE_API_KEY etc. in the
+environment, or add a line to ~/.config/nussif-data/keys.env (chmod 600). There
+is no Python setter -- a key must never be a literal that could be committed.
 
 Every accessor takes start=, end=, refresh=, out= (write to .parquet/.csv/.json/
 .feather). Results cache per symbol under $NUSSIF_DATA_CACHE (default ~/.cache/nussif-data/).
@@ -27,7 +30,7 @@ subclass Connector, add a catalog block, register it below.
 from __future__ import annotations
 
 from . import _catalog
-from ._config import get_key, set_key
+from ._config import get_key
 from .cache import cache_dir, clear_cache
 from .connectors import (
     AlphaVantageConnector,
@@ -47,7 +50,7 @@ from .core.errors import (
     UpstreamError,
 )
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 __all__ = [
     "REGISTRY",
     "AuthError",
@@ -68,7 +71,6 @@ __all__ = [
     "fred",
     "get_key",
     "massive",
-    "set_key",
 ]
 
 _cfg = _catalog.connectors()
