@@ -419,8 +419,10 @@ def test_databento_assemble_to_canonical():
     assert (out["symbol"] == "SPY").all()
 
 
-def test_massive_intraday_parse_and_rth_filter(monkeypatch):
+def test_massive_intraday_parse_and_rth_filter(monkeypatch, tmp_path):
     import nussif_data as nd
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))  # never touch the real cache
 
     # two 5-min bars: 10:00 ET (RTH) and 03:00 ET (pre-market), as Polygon ms epochs
     ny = "America/New_York"
