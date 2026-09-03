@@ -11,6 +11,7 @@ import pandas as pd
 
 from .. import _util
 from .._config import get_key
+from ..cache import cached
 from ..core import Connector, Dataset, HttpClient, QueryKeyAuth
 from ..core.errors import UpstreamError
 from ..core.schema import BARS_LONG
@@ -82,6 +83,83 @@ class MassiveConnector(Connector):
         if out:
             _util.write_frame(wide, out)
         return wide
+
+    # -- intraday (Polygon aggregates at an arbitrary multiplier/timespan) --
+    def bars_intraday(
+        self,
+        *tickers,
+        multiplier: int = 5,
+        timespan: str = "minute",
+        start=None,
+        end=None,
+        rth: bool = True,
+        refresh: bool = False,
+        out=None,
+    ):
+        """Intraday OHLCV aggregates. One tidy long frame:
+        (timestamp [tz-aware, America/New_York], ticker, open, high, low, close,
+        volume, vwap, trades).
+
+        The full history for each (ticker, multiplier, timespan) is fetched once
+        and cached; `start` / `end` then slice the cached frame. `rth=True` keeps
+        only the 09:30-16:00 ET regular session (drop for overnight studies).
+        """
+        d = self.cfg["datasets"]["intraday_bars"]
+        lo = pd.Timestamp(start) if start else pd.Timestamp(d["history_start"])
+        hi = pd.Timestamp(end) if end else pd.Timestamp(date.today())
+        frames = []
+        for tk in _util.flatten_symbols(tickers):
+            key = f"{self.name}/intraday_bars/{tk.upper()}_{multiplier}{timespan[:3]}"
+            frames.append(
+                cached(
+                    key,
+                    lambda tk=tk: self._fetch_intraday(tk, multiplier, timespan),
+                    refresh=refresh,
+                )
+            )
+        df = pd.concat(frames, ignore_index=True)
+        df = df[
+            (df["timestamp"] >= lo.tz_localize("America/New_York"))
+            & (df["timestamp"] < (hi + pd.Timedelta(days=1)).tz_localize("America/New_York"))
+        ]
+        if rth:
+            m = df["timestamp"].dt.hour * 60 + df["timestamp"].dt.minute
+            df = df[(m >= 570) & (m < 960)]
+        df = df.sort_values(["ticker", "timestamp"]).reset_index(drop=True)
+        if out:
+            _util.write_frame(df, out)
+        return df
+
+    def _fetch_intraday(self, ticker: str, multiplier: int, timespan: str) -> pd.DataFrame:
+        d = self.cfg["datasets"]["intraday_bars"]
+        tk = ticker.upper()
+        step = pd.DateOffset(months=int(d.get("chunk_months", 6)))
+        today = pd.Timestamp(date.today())
+        rows: list[dict] = []
+        lo = pd.Timestamp(d["history_start"])
+        while lo < today:
+            hi = min(lo + step, today)
+            path = d["endpoint"].format(
+                ticker=tk, multiplier=multiplier, timespan=timespan, start=lo.date(), end=hi.date()
+            )
+            j = self.http.get_json(path, d.get("params", {}))
+            page = j.get("results") or []
+            nxt = j.get("next_url")
+            while nxt:  # vendor split the window
+                j = self.http.get_json(nxt)
+                page += j.get("results") or []
+                nxt = j.get("next_url")
+            rows.extend(page)
+            lo = hi + pd.Timedelta(days=1)
+        if not rows:
+            raise UpstreamError(f"massive: no intraday bars for {tk!r}")
+        df = pd.DataFrame(rows).rename(columns=_RENAME)
+        df["timestamp"] = pd.to_datetime(df["t"], unit="ms", utc=True).dt.tz_convert(
+            "America/New_York"
+        )
+        df["ticker"] = tk
+        keep = ["timestamp", "ticker", *[c for c in BAR_FIELDS if c in df.columns]]
+        return df[keep].drop_duplicates("timestamp").sort_values("timestamp").reset_index(drop=True)
 
     def _cache_symbol(self, dataset: str, symbol: str) -> str:
         return symbol.upper()

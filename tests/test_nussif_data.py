@@ -417,3 +417,31 @@ def test_databento_assemble_to_canonical():
     assert list(out["right"]) == ["C", "P"]
     assert out.loc[out.right == "C", "bid"].iloc[0] == 1.25  # latest pre-close quote for id 1
     assert (out["symbol"] == "SPY").all()
+
+
+def test_massive_intraday_parse_and_rth_filter(monkeypatch):
+    import nussif_data as nd
+
+    # two 5-min bars: 10:00 ET (RTH) and 03:00 ET (pre-market), as Polygon ms epochs
+    ny = "America/New_York"
+    b_rth = int(pd.Timestamp("2020-06-02 10:00", tz=ny).tz_convert("UTC").timestamp() * 1000)
+    b_pre = int(pd.Timestamp("2020-06-02 03:00", tz=ny).tz_convert("UTC").timestamp() * 1000)
+    canned = {
+        "results": [
+            {"t": b_pre, "o": 1, "h": 1, "l": 1, "c": 1, "v": 10, "vw": 1, "n": 2},
+            {"t": b_rth, "o": 2, "h": 3, "l": 2, "c": 2.5, "v": 99, "vw": 2.4, "n": 7},
+        ]
+    }
+    monkeypatch.setattr(nd.massive.http, "get_json", lambda *a, **k: canned)
+
+    raw = nd.massive._fetch_intraday("spy", 5, "minute")
+    assert str(raw["timestamp"].dt.tz) == ny
+    assert set(raw["ticker"]) == {"SPY"}
+    assert {"timestamp", "ticker", "open", "close", "vwap", "trades"} <= set(raw.columns)
+    assert len(raw) == 2  # de-duped across the repeated 6-month windows
+
+    monkeypatch.setattr(nd.massive, "_fetch_intraday", lambda *a, **k: raw)
+    df = nd.massive.bars_intraday("SPY", start="2020-01-01", end="2020-12-31")  # rth=True default
+    assert len(df) == 1 and df["timestamp"].iloc[0].hour == 10  # pre-market bar dropped
+    df_all = nd.massive.bars_intraday("SPY", start="2020-01-01", end="2020-12-31", rth=False)
+    assert len(df_all) == 2
