@@ -90,7 +90,9 @@ class OptionChainRequest:
     Returned by `nd.massive.option_chain(...)` (== `OptionChainFetcher.__call__`).
     """
 
-    def __init__(self, fetcher: OptionChainFetcher, syms, date_strs, spot, mny, ndte, mdte, workers, raw):
+    def __init__(
+        self, fetcher: OptionChainFetcher, syms, date_strs, spot, mny, ndte, mdte, workers, raw
+    ):
         self._fetcher = fetcher
         self.syms = syms
         self.date_strs = date_strs
@@ -161,7 +163,13 @@ class OptionChainRequest:
                     cached(
                         self._cache_key(s, date_str),
                         lambda s=s, date_str=date_str: fetcher._one_chain(
-                            s, date_str, self.spot, self.mny, self.ndte, self.mdte, self.workers,
+                            s,
+                            date_str,
+                            self.spot,
+                            self.mny,
+                            self.ndte,
+                            self.mdte,
+                            self.workers,
                         ),
                         refresh=refresh,
                         metadata=self._metadata_for(s, date_str),
@@ -189,7 +197,7 @@ class OptionChainRequest:
             _util.write_frame(result, out, metadata=metadata)
         return result
 
-    def download(self, *, refresh: bool = False) -> dict:
+    def download(self, *, refresh: bool = False, on_progress=None) -> dict:
         """Like `.fetch()`, but never holds the requested range in memory:
         each (symbol, day) is fetched and written straight to
         $NUSSIF_DATA_CACHE by `cached()`'s own side effect, then discarded --
@@ -216,25 +224,45 @@ class OptionChainRequest:
         it. Returns a summary instead:
         `{"succeeded": [{"symbol", "date"}, ...], "failed": [{"symbol",
         "date", "error"}, ...]}`.
+
+        `on_progress(done, total, symbol, date_str, ok)` -- optional, called
+        after every (symbol, day) attempt (`done`/`total` counts, `ok` =
+        whether it succeeded). Lets a caller show live progress on a job
+        that's expected to run for hours -- see repl.py's background
+        `option_chain --mode download` job, which polls this to answer
+        `jobs` without blocking the shell on the download itself.
         """
         fetcher = self._fetcher
         succeeded: list[dict] = []
         failed: list[dict] = []
+        total = len(self.date_strs) * len(self.syms)
+        done = 0
         for date_str in self.date_strs:
             for s in self.syms:
                 try:
                     cached(
                         self._cache_key(s, date_str),
                         lambda s=s, date_str=date_str: fetcher._one_chain(
-                            s, date_str, self.spot, self.mny, self.ndte, self.mdte, self.workers,
+                            s,
+                            date_str,
+                            self.spot,
+                            self.mny,
+                            self.ndte,
+                            self.mdte,
+                            self.workers,
                         ),
                         refresh=refresh,
                         metadata=self._metadata_for(s, date_str),
                     )
                     succeeded.append({"symbol": s, "date": date_str})
+                    ok = True
                 except Exception as e:
                     log.warning("massive.option_chain.download: %s %s failed: %s", s, date_str, e)
                     failed.append({"symbol": s, "date": date_str, "error": str(e)})
+                    ok = False
+                done += 1
+                if on_progress is not None:
+                    on_progress(done, total, s, date_str, ok)
         return {"succeeded": succeeded, "failed": failed}
 
     def estimate(self, *, refresh: bool = False) -> dict:
@@ -264,12 +292,19 @@ class OptionChainRequest:
                     days_cached += 1
                     continue
                 spot = float(self.spot) if self.spot is not None else fetcher._spot_on(s, date_str)
-                contracts_df = fetcher._get_contracts(s, date_str, spot, self.mny, self.ndte, self.mdte)
+                contracts_df = fetcher._get_contracts(
+                    s, date_str, spot, self.mny, self.ndte, self.mdte
+                )
                 n = len(contracts_df)
                 day_seconds = overhead + n / (self.workers * rate)
                 est_seconds += day_seconds
                 per_day.append(
-                    {"symbol": s, "date": date_str, "contracts": n, "est_seconds": round(day_seconds, 1)}
+                    {
+                        "symbol": s,
+                        "date": date_str,
+                        "contracts": n,
+                        "est_seconds": round(day_seconds, 1),
+                    }
                 )
 
         return {

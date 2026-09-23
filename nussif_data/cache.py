@@ -111,6 +111,52 @@ def is_cached(key: str) -> bool:
     return os.path.exists(_path_for(key))
 
 
+def cache_summary() -> list[dict]:
+    """One row per top-level `<vendor>/<dataset>` key prefix under the cache
+    root: file count, total size, most recent write. Walks the whole cache
+    once (os.stat only, no parquet reads) -- meant for interactive browsing
+    (repl.py's `cache` command), not a hot path."""
+    root = cache_dir()
+    groups: dict[str, dict] = {}
+    for dirpath, _, files in os.walk(root):
+        for f in files:
+            if not f.endswith(".parquet"):
+                continue
+            full = os.path.join(dirpath, f)
+            rel = os.path.relpath(full, root)
+            key = rel[: -len(".parquet")].replace(os.sep, "/")
+            parts = key.split("/")
+            prefix = "/".join(parts[:2]) if len(parts) > 1 else parts[0]
+            st = os.stat(full)
+            g = groups.setdefault(
+                prefix, {"prefix": prefix, "files": 0, "size_bytes": 0, "newest": 0.0}
+            )
+            g["files"] += 1
+            g["size_bytes"] += st.st_size
+            g["newest"] = max(g["newest"], st.st_mtime)
+    return sorted(groups.values(), key=lambda g: g["prefix"])
+
+
+def cache_files(prefix: str = "") -> list[dict]:
+    """Every cached file whose key starts with `prefix` (e.g.
+    'massive/option_chain/QQQ') -- key, size, mtime. Empty prefix matches
+    everything. For drilling into one `cache_summary()` row."""
+    root = cache_dir()
+    rows = []
+    for dirpath, _, files in os.walk(root):
+        for f in files:
+            if not f.endswith(".parquet"):
+                continue
+            full = os.path.join(dirpath, f)
+            rel = os.path.relpath(full, root)
+            key = rel[: -len(".parquet")].replace(os.sep, "/")
+            if not key.startswith(prefix):
+                continue
+            st = os.stat(full)
+            rows.append({"key": key, "size_bytes": st.st_size, "mtime": st.st_mtime})
+    return sorted(rows, key=lambda r: r["key"])
+
+
 def clear_cache(prefix: str | None = None) -> int:
     """Delete cached parquet files (optionally only those whose key starts with
     `prefix`, e.g. 'cboe'). Returns count removed."""

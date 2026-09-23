@@ -30,8 +30,33 @@ nussif-data cboe VIX VIX3M --start 2015 -o vix.parquet
 nussif-data fred BAA10Y NFCI --start 2010 --end 2020 -o macro.csv
 nussif-data massive SPY QQQ TLT --start 2020 --field close -o closes.parquet
 nussif-data massive SPY --raw --head 5
+nussif-data option_chain SPY --date 2024-06-03
+nussif-data option_chain QQQ --start 2020-01-01 --end 2026-09-23 --mode download --max-workers 250
 nussif-data catalog
 ```
+
+### Interactive shell
+`nussif-data` with **no arguments** drops into a persistent shell instead of the one-shot
+commands above — for browsing the catalog/cache and running fetches across a session
+instead of one process per call:
+```
+$ nussif-data
+nussif-data 0.7.2 -- interactive shell. Type 'help' for commands, 'exit' to leave.
+nd> catalog                                          # dataset -> connector/providers/description
+nd> cache                                             # what's on disk, by <vendor>/<dataset>
+nd> cache massive/option_chain/QQQ                     # drill into one prefix's files
+nd> clearcache massive/raw                             # delete cached files under a prefix (asks first)
+nd> fetch massive SPY QQQ --start 2020 --field close
+nd> option_chain SPY --date 2024-06-03
+nd> option_chain QQQ --start 2020-01-01 --end 2026-09-23 --mode download --max-workers 250
+started job 1: QQQ, 1689 day(s) queued -- 'jobs' to check progress
+nd> jobs                                              # background downloads + live progress
+nd> job 1                                             # one job's failed days, if any
+nd> exit                                              # jobs still running keep going -- process stays alive for them
+```
+Built on stdlib `cmd.Cmd` for navigation (command history/completion via readline) with
+`rich` only for rendering tables — no new dependency for the interactive loop itself.
+A `--mode download` here always runs in the background so the prompt stays usable.
 
 ## Install
 ```bash
@@ -68,6 +93,10 @@ nussif_data/
                      vendor call) and composites: (datasets this lib defined,
                      built from endpoints: named in their own `uses:` list --
                      validated against endpoints: at load time)
+  cli.py             scriptable one-shot CLI (argparse); no args -> repl.py instead
+  repl.py            interactive shell (cmd.Cmd + rich) -- catalog/cache browsing,
+                     fetch, option_chain fetch/estimate/background-download + jobs
+  _option_chain_cli.py   option_chain arg parsing/dispatch shared by cli.py + repl.py
   core/
     http.py          HttpClient — connection reuse, token-bucket rate limit,
                      retry/backoff, pluggable auth (query-key | bearer | none),

@@ -1,13 +1,19 @@
 """`nussif-data` command line — download without writing Python.
 
+    nussif-data                                          # no args -> interactive shell
     nussif-data cboe VIX VIX3M --start 2015 -o vix.parquet
     nussif-data fred BAA10Y NFCI --start 2010 --end 2020 -o macro.csv
     nussif-data massive SPY QQQ TLT --start 2020 -o bars.parquet
     nussif-data massive SPY QQQ --field close      # WIDE by ticker
+    nussif-data option_chain SPY --date 2024-06-03
+    nussif-data option_chain QQQ --start 2020-01-01 --end 2026-09-23 --mode download --max-workers 250
     nussif-data catalog
     nussif-data connectors
 
 One subcommand per vendor; it operates on that vendor's primary dataset.
+`option_chain` is its own subcommand (massive-only for now) since it's a
+build-then-fetch/estimate/download request, not a single call -- see
+_option_chain_cli.py, shared with the interactive shell's own command.
 """
 
 from __future__ import annotations
@@ -17,6 +23,8 @@ import json
 import sys
 
 from . import __version__, catalog, cboe, connectors, fred, massive
+from ._option_chain_cli import add_option_chain_args
+from ._option_chain_cli import run as oc_run
 from .connectors.massive import BAR_FIELDS
 
 _VENDORS = {"cboe": cboe, "fred": fred, "massive": massive}
@@ -61,12 +69,54 @@ def _build_parser() -> argparse.ArgumentParser:
                 help="one field, WIDE by ticker (like cboe/fred); default = tidy long",
             )
 
+    oc = sub.add_parser(
+        "option_chain", help="Massive EOD option chain: fetch / estimate / download"
+    )
+    add_option_chain_args(oc)
+
     sub.add_parser("catalog", help="list fetchable datasets")
     sub.add_parser("connectors", help="list connectors and their datasets")
     return p
 
 
+def _run_option_chain(a: argparse.Namespace) -> int:
+    mode, result = oc_run(a)
+
+    if mode == "estimate":
+        print(json.dumps(result, indent=2))
+        return 0
+    if mode == "download":
+        summary = result.download(refresh=a.refresh)
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    # mode == "fetch"
+    if a.raw:  # {symbol: frame}
+        for sym, df in result.items():
+            print(f"# {sym}  ({len(df)} rows, columns: {list(df.columns)})")
+            print((df if a.head == 0 else df.head(a.head)).to_string(index=False))
+            print()
+        return 0
+
+    df = result
+    if a.out:
+        print(f"wrote {a.out}  ({len(df)} rows x {df.shape[1]} cols)")
+    else:
+        shown = df if a.head == 0 else df.head(a.head)
+        print(shown.to_string(index=False))
+        if a.head and len(df) > a.head:
+            print(f"... {len(df)} rows total — --head 0 for all, -o FILE to save")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        from .repl import run_repl
+
+        return run_repl()
+
     a = _build_parser().parse_args(argv)
 
     if a.cmd == "catalog":
@@ -75,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "connectors":
         print(json.dumps(connectors(), indent=2, default=str))
         return 0
+    if a.cmd == "option_chain":
+        return _run_option_chain(a)
 
     kw = {"start": a.start, "end": a.end, "refresh": a.refresh, "raw": a.raw}
     if not a.raw:
