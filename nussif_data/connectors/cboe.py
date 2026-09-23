@@ -60,7 +60,7 @@ class CboeConnector(Connector):
         )
 
     def _fetch_symbol(self, dataset: str, symbol: str, raw: bool = False) -> pd.DataFrame:
-        d = self.cfg["datasets"][dataset]
+        d = self.cfg["endpoints"][dataset]
         sym = symbol.upper()
         b = self.http.get_bytes(d["url_template"].format(symbol=sym))
         return _read_history(b) if raw else _parse_history(sym, b)
@@ -70,5 +70,5 @@ class CboeConnector(Connector):
 
     def ping(self) -> bool:
         """Explicit liveness probe (network)."""
-        self.http.get_bytes(self.cfg["datasets"]["vol_index"]["url_template"].format(symbol="VIX"))
+        self.http.get_bytes(self.cfg["endpoints"]["vol_index"]["url_template"].format(symbol="VIX"))
         return True

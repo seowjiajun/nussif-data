@@ -12,22 +12,73 @@ full ~1.7M-contract universe (~$10/name/month):
 That's ~cents for the full weekly 2013->now, 4-name P2 backfill. Real OPRA quotes;
 no IV/greeks/OI (compute IV yourself; OI is a separate `statistics` pull).
 
+Open interest -- `open_interest()` -- is that separate `statistics` pull:
+one `stat_type=OPEN_INTEREST` snapshot for the WHOLE parent symbol (no
+definition/moneyness stage needed, and no per-request symbol cap the way
+`cbbo-1m` quotes have), disseminated once near the 9:31 ET open. Per OPRA/OCC
+convention (and what every public GEX calculator assumes), that AM print is
+the open interest *in effect for that trading day's session*, not the prior
+day's closing snapshot repeated -- so pulling `date=d` here lines up with a
+same-day `option_chain(date=d)` EOD quote, even though the two are stamped
+~6.5 hours apart. Contracts are identified straight from the OSI-format
+`symbol` string (root + YYMMDD + C/P + strike*1000, 21 chars fixed-width) --
+cheaper and simpler than a second `definition` round-trip for the same thing
+`option_chain`'s own definition stage already gives you.
+
 Uses the `databento` client (its own protocol), not the shared HttpClient.
 `pip install "nussif-data[databento]"`.
 """
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from .._config import get_key
-from ..cache import cached
+from ..cache import cache_dir, cached
 from ..core import Connector, Dataset
 from ..core.errors import UpstreamError
-from ..core.schema import OPTION_CHAIN
+from ..core.schema import OPEN_INTEREST, OPTION_CHAIN
+
+_STAT_TYPE_OPEN_INTEREST = 9  # databento_dbn.StatType.OPEN_INTEREST
+
+
+def _save_raw(schema: str, sym: str, date: str, df: pd.DataFrame) -> None:
+    """Persist Databento's response for this call exactly as returned by
+    `.to_df()` -- every field, every dtype, untouched -- before any of this
+    module's filtering/renaming/joining. This is the audit source of truth:
+    if `option_chain()`/`open_interest()`'s derived, convenience-shaped
+    output is ever questioned, this is what you reconcile against, not a
+    re-derivation from the already-narrowed frame. Only called from inside
+    `_get_definitions`/`_get_quotes`/`_get_oi`, which only run on a real
+    network call (a genuine cache miss or explicit `refresh=True` on the
+    outer `option_chain`/`open_interest` cache) -- so this never writes
+    without a real, paid Databento response behind it, and a `refresh=True`
+    re-pull overwrites with the newer raw response rather than silently
+    keeping the stale one."""
+    path = os.path.join(cache_dir(), "databento", "raw", schema, sym, f"{date}.parquet")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    df.to_parquet(path, index=False)
+
+
+def _parse_osi(symbol: str) -> dict | None:
+    """OSI-format option symbol -> {root, expiration, right, strike}. Fixed
+    21-char layout: 6-char root (space-padded), YYMMDD, 'C'|'P', strike*1000
+    zero-padded to 8 digits. `None` if `symbol` doesn't match (defensive --
+    every OPRA options print should)."""
+    if len(symbol) != 21 or symbol[12] not in "CP":
+        return None
+    root = symbol[:6].strip()
+    yy, mm, dd = symbol[6:8], symbol[8:10], symbol[10:12]
+    try:
+        expiration = pd.Timestamp(f"20{yy}-{mm}-{dd}")
+        strike = int(symbol[13:21]) / 1000.0
+    except ValueError:
+        return None
+    return {"root": root, "expiration": expiration, "right": symbol[12], "strike": strike}
 
 _UTC = ZoneInfo("UTC")
 
@@ -74,7 +125,13 @@ class DatabentoConnector(Connector):
                 OPTION_CHAIN,
                 needs_key=True,
                 description="historical OPRA EOD option chain (definition + cbbo-1m), from 2013-04",
-            )
+            ),
+            Dataset(
+                "open_interest",
+                OPEN_INTEREST,
+                needs_key=True,
+                description="daily OPRA open interest per contract (statistics, AM print), from 2013-04",
+            ),
         ]
 
     def _fetch_symbol(self, dataset, symbol, raw=False):
@@ -114,17 +171,53 @@ class DatabentoConnector(Connector):
         ]
         if not syms:
             raise ValueError("nd.databento.option_chain(...) needs at least one symbol")
+        date_str = pd.Timestamp(date).strftime("%Y-%m-%d")  # a bare `str(pd.Timestamp(...))`
+        # includes " 00:00:00" -- Databento's `start`/`end` reject that, only clean ISO dates
 
         frames = [
             cached(
-                f"databento/option_chain/{s}/{date}/m{mny}_d{ndte}-{mdte}",
-                lambda s=s: self._one(s, str(date), spot, mny, ndte, mdte),
+                f"databento/option_chain/{s}/{date_str}/m{mny}_d{ndte}-{mdte}",
+                lambda s=s: self._one(s, date_str, spot, mny, ndte, mdte),
                 refresh=refresh,
             )
             for s in syms
         ]
         out = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
         return OPTION_CHAIN.validate(out, where="databento.option_chain")
+
+    def open_interest(self, *symbols, date, refresh: bool = False):
+        """Daily open interest per contract for each `symbol` on `date`
+        (YYYY-MM-DD), from Databento's `statistics` schema. One row per listed
+        contract with nonzero OI that day -- no moneyness/DTE band (the whole
+        parent-symbol pull is one lightweight `statistics` request, not the
+        quote-cap-constrained `cbbo-1m` stage `option_chain` needs), so filter
+        the result yourself, or join it to a same-day `option_chain(date=date)`
+        frame on (expiration, strike, right). See the module docstring for the
+        AM-print/same-day convention this assumes.
+        """
+        syms = [
+            str(s).upper()
+            for s in (
+                symbols[0]
+                if len(symbols) == 1 and isinstance(symbols[0], (list, tuple))
+                else symbols
+            )
+        ]
+        if not syms:
+            raise ValueError("nd.databento.open_interest(...) needs at least one symbol")
+        date_str = pd.Timestamp(date).strftime("%Y-%m-%d")  # a bare `str(pd.Timestamp(...))`
+        # includes " 00:00:00" -- Databento's `start`/`end` reject that, only clean ISO dates
+
+        frames = [
+            cached(
+                f"databento/open_interest/{s}/{date_str}",
+                lambda s=s: self._one_oi(s, date_str),
+                refresh=refresh,
+            )
+            for s in syms
+        ]
+        out = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        return OPEN_INTEREST.validate(out, where="databento.open_interest")
 
     # -- stages --
     def _one(self, sym: str, date: str, spot, mny: float, ndte: int, mdte: int) -> pd.DataFrame:
@@ -133,8 +226,15 @@ class DatabentoConnector(Connector):
         defn = self._filter(defn, date, spot, mny, ndte, mdte)
         if defn.empty:
             raise UpstreamError(f"databento: no contracts in band for {sym} {date}")
-        quotes = self._get_quotes(defn["raw_symbol"].tolist(), date, spec)
+        quotes = self._get_quotes(sym, defn["raw_symbol"].tolist(), date, spec)
         return self._assemble(sym, date, defn, quotes, spec)
+
+    def _one_oi(self, sym: str, date: str) -> pd.DataFrame:
+        raw = self._get_oi(sym, date)
+        out = self._assemble_oi(sym, date, raw)
+        if out.empty:
+            raise UpstreamError(f"databento: no open interest for {sym} {date}")
+        return out
 
     # -- network (isolated so tests can monkeypatch) --
     def _get_definitions(self, sym: str, date: str) -> pd.DataFrame:
@@ -148,9 +248,10 @@ class DatabentoConnector(Connector):
             end=end,
         )
         df = data.to_df()
+        _save_raw("definition", sym, date, df)
         return df[["raw_symbol", "instrument_id", "strike_price", "expiration", "instrument_class"]]
 
-    def _get_quotes(self, raw_symbols: list[str], date: str, spec: dict) -> pd.DataFrame:
+    def _get_quotes(self, sym: str, raw_symbols: list[str], date: str, spec: dict) -> pd.DataFrame:
         c = _close_utc(
             date, spec.get("close_tz", "America/New_York"), spec.get("close_time", "16:00")
         )
@@ -168,10 +269,33 @@ class DatabentoConnector(Connector):
                 end=end,
             )
             frames.append(data.to_df())  # databento >=0.80: float prices + pretty ts
-        if len(frames) == 1:
-            return frames[0]
-        keep_index = all(f.index.name for f in frames)  # e.g. ts_event index
-        return pd.concat(frames) if keep_index else pd.concat(frames, ignore_index=True)
+        quotes = frames[0]
+        if len(frames) > 1:
+            keep_index = all(f.index.name for f in frames)  # e.g. ts_event index
+            quotes = pd.concat(frames) if keep_index else pd.concat(frames, ignore_index=True)
+        _save_raw("cbbo-1m", sym, date, quotes)
+        return quotes
+
+    def _get_oi(self, sym: str, date: str) -> pd.DataFrame:
+        end = (pd.Timestamp(date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        data = self._client().timeseries.get_range(
+            dataset=self.DATASET,
+            schema="statistics",
+            symbols=[f"{sym}.OPT"],
+            stype_in="parent",
+            start=date,
+            end=end,
+        )
+        df = data.to_df()
+        _save_raw("statistics", sym, date, df)  # every stat_type, not just OPEN_INTEREST -- see filter below
+        # `statistics` carries every stat type (settlement price, highest bid,
+        # volatility, ...), not just OI -- on a typical day only ~20% of rows
+        # are `stat_type == OPEN_INTEREST`; the rest's `quantity` field is
+        # unused/meaningless for that row (seen in practice as a raw int32
+        # sentinel, 2147483647) and must not be read as open interest. The
+        # raw save above keeps every stat_type regardless -- this filter only
+        # narrows what `open_interest()`'s derived output returns.
+        return df[df["stat_type"] == _STAT_TYPE_OPEN_INTEREST]
 
     # -- pure transforms --
     @staticmethod
@@ -226,4 +350,35 @@ class DatabentoConnector(Connector):
             "ask_size",
         ]
         out = out[[c for c in keep if c in out.columns]]
+        return out.sort_values(["expiration", "strike", "right"]).reset_index(drop=True)
+
+    @staticmethod
+    def _assemble_oi(sym: str, date: str, raw: pd.DataFrame) -> pd.DataFrame:
+        if raw.empty:
+            return raw
+        # the raw feed repeats the same (instrument_id, ts_event) print several
+        # times (a multicast/publisher artifact, not distinct updates) -- keep
+        # one row per instrument, the latest by ts_event, same convention
+        # `_assemble` already uses for quotes.
+        r = raw.assign(_ts=pd.to_datetime(raw["ts_event"], utc=True))
+        r = r.sort_values("_ts").groupby("instrument_id").tail(1)
+
+        parsed = r["symbol"].map(_parse_osi)
+        rows = []
+        for sym_str, p, qty in zip(r["symbol"], parsed, r["quantity"], strict=True):
+            if p is None or p["root"] != sym:
+                continue
+            rows.append(
+                {
+                    "symbol": sym,
+                    "date": pd.Timestamp(date),
+                    "expiration": p["expiration"],
+                    "strike": p["strike"],
+                    "right": p["right"],
+                    "open_interest": float(qty),
+                }
+            )
+        out = pd.DataFrame(rows)
+        if out.empty:
+            return out
         return out.sort_values(["expiration", "strike", "right"]).reset_index(drop=True)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nussif-data"
-version = "0.6.0"
+version = "0.7.2"
 description = "One-line access to CBOE, FRED, Massive, Alpha Vantage and Databento market data"
 requires-python = ">=3.10"
 dependencies = [
@@ -16,6 +16,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7", "ruff>=0.4"]
 databento = ["databento>=0.80"]
+# only nd.massive.option_chain()'s concurrent per-contract quote fetch needs this --
+# the shared HttpClient (bars, everything else) stays stdlib-only. Lazily imported,
+# so the rest of the package works fine without it.
+massive-options = ["requests>=2.31"]
 
 [project.scripts]
 nussif-data = "nussif_data.cli:main"

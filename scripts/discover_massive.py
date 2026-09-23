@@ -23,13 +23,17 @@ import urllib.parse
 import urllib.request
 from datetime import date
 
+from nussif_data._catalog import connector_cfg
+
 socket.setdefaulttimeout(8)  # bound EVERY socket op, incl. probes to dead hosts
 
 
-# Docs live at massive.com/docs/rest/... so api.massive.com is the overwhelming
-# favourite. Others are cheap fallbacks and are skipped fast if DNS fails.
+# The confirmed base comes from catalog.yaml -- the single source of truth the
+# connector itself uses -- so this never drifts from it. The other two are cheap,
+# unconfirmed fallbacks (never used by the connector) and are skipped fast if DNS
+# fails; they only matter if catalog.yaml's base_url ever stops authenticating.
 CANDIDATE_BASES = [
-    "https://api.massive.com",
+    connector_cfg("massive")["base_url"],
     "https://rest.massive.com",
     "https://api.massive.io",
 ]

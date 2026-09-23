@@ -85,8 +85,16 @@ BARS_LONG = Schema(
     }
 )
 
-# canonical option-chain slice -- one row per contract; every provider maps to this.
-# iv / greeks / open_interest are optional (present only if the vendor supplies them).
+# canonical option-chain slice -- one row per contract. Used by massive's,
+# alphavantage's, and databento's own option_chain()s -- `nd` is a
+# pandas-datareader-like convenience tool that hands back generic,
+# immediately-usable ("silver") data, not a vendor-field-preservation layer;
+# a connector that wants to keep the untouched vendor response around for
+# audit purposes does that itself (see connectors/massive/options.py's own
+# _save_raw), separately from this schema. Only symbol/date/expiration/
+# strike/right/bid/ask are guaranteed; everything else a connector's
+# _assemble() chooses to pass through (iv, greeks, open interest, sizes,
+# fetch provenance, ...) rides in as-is under the "*" wildcard.
 OPTION_CHAIN = Schema(
     {
         "symbol": "string",
@@ -96,6 +104,47 @@ OPTION_CHAIN = Schema(
         "right": "string",  # 'C' | 'P'
         "bid": "float",
         "ask": "float",
-        "*": "float",
+        "*": "*",
+    }
+)
+
+# exchange id -> name/mic/participant_id mapping -- decodes a connector's own
+# numeric venue codes (e.g. option_chain()'s ask_exchange/bid_exchange).
+EXCHANGES = Schema(
+    {
+        "id": "int",
+        "name": "string",
+        "*": "*",
+    }
+)
+
+# tick-level trade prints -- one row per print. No single canonical shape the
+# way OPTION_CHAIN has one (there's no vendor-agnostic "this is a trade"
+# concept to normalize onto yet, only massive.trades() today) -- ticker/
+# timestamp/price/size are guaranteed, everything else (exchange, conditions,
+# sequence_number, correction, raw vendor timestamps) rides in verbatim.
+TRADES = Schema(
+    {
+        "ticker": "string",
+        "timestamp": "datetime",
+        "price": "float",
+        "size": "float",
+        "*": "*",
+    }
+)
+
+# canonical daily open-interest slice -- one row per contract; separate from
+# OPTION_CHAIN since it comes from a different schema/timestamp on most vendors
+# (Databento: `statistics`, disseminated near the AM open, vs. `cbbo-1m` EOD
+# quotes) -- join to a same-day OPTION_CHAIN frame on (expiration, strike, right)
+# yourself rather than expecting one call to return both.
+OPEN_INTEREST = Schema(
+    {
+        "symbol": "string",
+        "date": "date",
+        "expiration": "date",
+        "strike": "float",
+        "right": "string",  # 'C' | 'P'
+        "open_interest": "float",
     }
 )

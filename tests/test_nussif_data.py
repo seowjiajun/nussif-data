@@ -12,7 +12,7 @@ import nussif_data as nd
 from nussif_data import _util
 from nussif_data.connectors.cboe import _parse_history
 from nussif_data.core import HttpClient, QueryKeyAuth
-from nussif_data.core.errors import AuthError, NotEntitled, RateLimited, SchemaError
+from nussif_data.core.errors import AuthError, NotEntitled, RateLimited, SchemaError, UpstreamError
 from nussif_data.core.http import _redact
 from nussif_data.core.schema import BARS_LONG, Schema
 
@@ -158,6 +158,87 @@ def test_no_python_key_setter():
     assert not hasattr(_config, "set_key")
 
 
+def test_get_key_never_prompts_when_not_interactive(monkeypatch):
+    # sanity check on the guard itself, independent of pytest's own env var --
+    # a real non-tty stdin with no ipykernel loaded (true in every CI/plain
+    # test runner) must never prompt
+    from nussif_data import _config
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(_config.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(_config.sys, "modules", {k: v for k, v in _config.sys.modules.items() if k != "ipykernel"})
+    assert _config._can_prompt() is False
+
+
+def test_get_key_can_prompt_inside_jupyter_kernel(monkeypatch):
+    # the actual bug this guards against: sys.stdin.isatty() is False inside
+    # every real Jupyter kernel (verified live), but ipykernel monkey-patches
+    # getpass.getpass/input to a masked input box in the notebook UI, so it IS
+    # interactive -- isatty() alone would silently disable prompting in the
+    # environment this library is mostly used in.
+    from nussif_data import _config
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(_config.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setitem(_config.sys.modules, "ipykernel", object())
+    assert _config._can_prompt() is True
+
+
+def test_get_key_prompts_and_persists_when_interactive(monkeypatch, tmp_path):
+    from nussif_data import _config
+
+    monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+    keys_file = tmp_path / "keys.env"
+    monkeypatch.setattr(_config, "CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(_config, "KEYS_FILE", str(keys_file))
+    monkeypatch.setattr(_config, "_can_prompt", lambda: True)
+    monkeypatch.setattr(_config.getpass, "getpass", lambda prompt: "PASTED_KEY")
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+
+    key = _config.get_key("massive")
+    assert key == "PASTED_KEY"
+    assert keys_file.exists()
+    assert keys_file.read_text().strip() == "MASSIVE_API_KEY=PASTED_KEY"
+    assert oct(os.stat(keys_file).st_mode)[-3:] == "600"
+
+    # second call resolves straight from the now-persisted file -- must not prompt again
+    monkeypatch.setattr(
+        _config, "_can_prompt", lambda: (_ for _ in ()).throw(AssertionError("should not prompt again"))
+    )
+    assert _config.get_key("massive") == "PASTED_KEY"
+
+
+def test_get_key_prompt_declines_save(monkeypatch, tmp_path):
+    from nussif_data import _config
+
+    monkeypatch.delenv("ALPHAVANTAGE_API_KEY", raising=False)
+    keys_file = tmp_path / "keys.env"
+    monkeypatch.setattr(_config, "CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(_config, "KEYS_FILE", str(keys_file))
+    monkeypatch.setattr(_config, "_can_prompt", lambda: True)
+    monkeypatch.setattr(_config.getpass, "getpass", lambda prompt: "EPHEMERAL_KEY")
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+    key = _config.get_key("alphavantage")
+    assert key == "EPHEMERAL_KEY"
+    assert not keys_file.exists()  # declined -- nothing persisted
+
+
+def test_get_key_prompt_eof_falls_through_to_runtime_error(monkeypatch, tmp_path):
+    from nussif_data import _config
+
+    monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+    monkeypatch.setattr(_config, "KEYS_FILE", str(tmp_path / "nope.env"))
+    monkeypatch.setattr(_config, "_can_prompt", lambda: True)
+
+    def _boom(prompt):
+        raise EOFError
+
+    monkeypatch.setattr(_config.getpass, "getpass", _boom)
+    with pytest.raises(RuntimeError, match="no API key for 'massive'"):
+        _config.get_key("massive")
+
+
 # --- file export + CLI ------------------------------------------------
 def test_write_frame_roundtrip(tmp_path):
     from nussif_data._util import write_frame
@@ -174,6 +255,85 @@ def test_write_frame_rejects_unknown_ext(tmp_path):
 
     with pytest.raises(ValueError, match="unsupported output extension"):
         write_frame(pd.DataFrame({"a": [1]}), tmp_path / "x.txt")
+
+
+def test_write_frame_relative_path_resolves_against_nussif_data_out(monkeypatch, tmp_path):
+    from nussif_data._util import write_frame
+
+    monkeypatch.setenv("NUSSIF_DATA_OUT", str(tmp_path))
+    p = write_frame(pd.DataFrame({"a": [1]}), "sub/x.parquet")
+    assert p == str(tmp_path / "sub" / "x.parquet")
+    assert os.path.exists(p)
+
+
+def test_write_frame_absolute_path_ignores_nussif_data_out(monkeypatch, tmp_path):
+    from nussif_data._util import write_frame
+
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    monkeypatch.setenv("NUSSIF_DATA_OUT", str(tmp_path / "not-here"))
+    p = write_frame(pd.DataFrame({"a": [1]}), str(other / "x.parquet"))
+    assert p == str(other / "x.parquet")
+    assert os.path.exists(p)
+
+
+def test_cached_embeds_parquet_metadata(monkeypatch, tmp_path):
+    import pyarrow.parquet as pq
+
+    from nussif_data.cache import cached
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    cached("some/key", lambda: pd.DataFrame({"a": [1]}), metadata={"nd_vendor": "massive"})
+    path = tmp_path / "some" / "key.parquet"
+    assert pq.read_schema(str(path)).metadata[b"nd_vendor"] == b"massive"
+
+
+def test_cached_hit_does_not_retroactively_add_metadata(monkeypatch, tmp_path):
+    import pyarrow.parquet as pq
+
+    from nussif_data.cache import cached
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    cached("some/key", lambda: pd.DataFrame({"a": [1]}))  # written with no metadata
+    # second call is a cache hit -- passing metadata now must not rewrite the file
+    cached("some/key", lambda: (_ for _ in ()).throw(AssertionError("should be a cache hit")),
+           metadata={"nd_vendor": "massive"})
+    path = tmp_path / "some" / "key.parquet"
+    meta = pq.read_schema(str(path)).metadata or {}
+    assert b"nd_vendor" not in meta
+
+
+def test_write_frame_embeds_parquet_metadata(tmp_path):
+    import pyarrow.parquet as pq
+
+    from nussif_data._util import write_frame
+
+    p = write_frame(
+        pd.DataFrame({"a": [1]}),
+        str(tmp_path / "x.parquet"),
+        metadata={"nd_vendor": "massive", "nd_dataset": "option_chain"},
+    )
+    meta = pq.read_schema(p).metadata
+    assert meta[b"nd_vendor"] == b"massive"
+    assert meta[b"nd_dataset"] == b"option_chain"
+    # data itself is unaffected by attaching metadata
+    pd.testing.assert_frame_equal(pd.read_parquet(p), pd.DataFrame({"a": [1]}))
+
+
+def test_write_frame_metadata_ignored_for_non_parquet(tmp_path):
+    from nussif_data._util import write_frame
+
+    # must not raise -- metadata is simply inapplicable to csv, not an error
+    p = write_frame(pd.DataFrame({"a": [1]}), str(tmp_path / "x.csv"), metadata={"k": "v"})
+    assert os.path.exists(p)
+
+
+def test_out_dir_defaults_to_cwd(monkeypatch, tmp_path):
+    from nussif_data.cache import out_dir
+
+    monkeypatch.delenv("NUSSIF_DATA_OUT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert os.path.realpath(out_dir()) == os.path.realpath(str(tmp_path))
 
 
 def test_bars_field_validation():
@@ -241,7 +401,11 @@ def test_flatten_symbols_varargs_and_list():
 # --- alphavantage connector (offline) --------------------------------------
 def test_alphavantage_in_registry():
     assert nd.catalog()["option_chain"]["connector"] == "alphavantage"
-    assert set(nd.catalog()["option_chain"]["providers"]) == {"alphavantage", "databento"}
+    assert set(nd.catalog()["option_chain"]["providers"]) == {
+        "alphavantage",
+        "databento",
+        "massive",
+    }
     assert nd.catalog()["option_chain"]["needs_key"] is True
     assert callable(nd.alphavantage.option_chain)
 
@@ -419,8 +583,164 @@ def test_databento_assemble_to_canonical():
     assert (out["symbol"] == "SPY").all()
 
 
+def test_databento_option_chain_normalizes_timestamp_date(monkeypatch, tmp_path):
+    """Same bug as `open_interest`'s, found later in the same session: a bare
+    `str(pd.Timestamp(...))` is "2020-02-07 00:00:00", and Databento's `start`/
+    `end` reject the embedded time-of-day. Every existing caller happened to
+    pass a clean date string (never a raw Timestamp), so this was live in
+    `option_chain` for a long time without tripping -- caught only when a new
+    caller (`_vrp.load_chain`) passed a `pd.Timestamp` straight through."""
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    from nussif_data.connectors.databento import DatabentoConnector
+
+    conn = DatabentoConnector.__new__(DatabentoConnector)
+    conn.cfg = {"datasets": {"option_chain": {}}}
+    seen = {}
+
+    def fake_one(sym, date_str, spot, mny, ndte, mdte):
+        seen["date_str"] = date_str
+        return pd.DataFrame(
+            {
+                "symbol": ["SPY"],
+                "date": [pd.Timestamp(date_str)],
+                "expiration": [pd.Timestamp("2020-03-20")],
+                "strike": [330.0],
+                "right": ["P"],
+                "bid": [1.30],
+                "ask": [1.35],
+            }
+        )
+
+    conn._one = fake_one
+    conn.option_chain("SPY", date=pd.Timestamp("2020-02-07"))
+    assert seen["date_str"] == "2020-02-07"  # no embedded " 00:00:00"
+
+
+def test_databento_registered_open_interest():
+    assert callable(nd.databento.open_interest)
+
+
+def test_databento_open_interest_normalizes_timestamp_date(monkeypatch, tmp_path):
+    """A bare `str(pd.Timestamp(...))` is "2022-04-07 00:00:00" -- Databento's
+    `start`/`end` reject the embedded time-of-day. Regression: passing a
+    `pd.Timestamp` (not a plain date string) used to reach `get_range` with
+    that unstripped string and fail with a 400 from the real API."""
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))  # never touch the real cache
+    from nussif_data.connectors.databento import DatabentoConnector
+
+    conn = DatabentoConnector.__new__(DatabentoConnector)
+    conn.cfg = {}
+    seen = {}
+
+    def fake_one_oi(sym, date_str):
+        seen["date_str"] = date_str
+        return pd.DataFrame(
+            {
+                "symbol": ["SPY"],
+                "date": [pd.Timestamp(date_str)],
+                "expiration": [pd.Timestamp("2022-04-08")],
+                "strike": [330.0],
+                "right": ["P"],
+                "open_interest": [1207.0],
+            }
+        )
+
+    conn._one_oi = fake_one_oi
+    conn.open_interest("SPY", date=pd.Timestamp("2022-04-07"))
+    assert seen["date_str"] == "2022-04-07"  # no embedded " 00:00:00"
+
+
+def test_databento_parse_osi():
+    from nussif_data.connectors.databento import _parse_osi
+
+    p = _parse_osi("SPY   220408P00330000")
+    assert p == {
+        "root": "SPY",
+        "expiration": pd.Timestamp("2022-04-08"),
+        "right": "P",
+        "strike": 330.0,
+    }
+    assert _parse_osi("not-osi") is None  # wrong length -> defensive None, not a crash
+
+
+def test_databento_assemble_oi_to_canonical():
+    from nussif_data.connectors.databento import DatabentoConnector
+    from nussif_data.core.schema import OPEN_INTEREST
+
+    t0 = pd.Timestamp("2022-04-07T11:30:00Z")
+    raw = pd.DataFrame(
+        {
+            "symbol": ["SPY   220408P00330000", "SPY   220408C00450000", "QQQ   220408C00300000"],
+            "quantity": [1207, 532, 999],  # QQQ row should be dropped -- wrong root for this pull
+            "instrument_id": [1, 2, 3],
+            "ts_event": [t0, t0, t0],
+        }
+    )
+    out = DatabentoConnector._assemble_oi("SPY", "2022-04-07", raw)
+    OPEN_INTEREST.validate(out, where="test")
+    assert len(out) == 2
+    assert set(out["right"]) == {"C", "P"}
+    assert out.loc[out.right == "P", "open_interest"].iloc[0] == 1207.0
+    assert out.loc[out.right == "P", "strike"].iloc[0] == 330.0
+    assert (out["symbol"] == "SPY").all()
+
+
+def test_databento_assemble_oi_dedupes_repeated_prints():
+    """The raw feed repeats the same (instrument_id, ts_event) print several
+    times (a multicast artifact) -- must collapse to one row per contract, not
+    sum/duplicate it."""
+    from nussif_data.connectors.databento import DatabentoConnector
+
+    raw = pd.DataFrame(
+        {
+            "symbol": ["SPY   220408P00330000"] * 4,
+            "quantity": [1207, 1207, 1207, 1207],
+            "instrument_id": [1, 1, 1, 1],
+            "ts_event": [pd.Timestamp("2022-04-07T11:30:00Z")] * 4,
+        }
+    )
+    out = DatabentoConnector._assemble_oi("SPY", "2022-04-07", raw)
+    assert len(out) == 1
+    assert out["open_interest"].iloc[0] == 1207.0
+
+
+def test_databento_get_oi_filters_to_open_interest_stat_type():
+    """`statistics` carries every stat type on a real pull -- only
+    `stat_type == OPEN_INTEREST` (9) rows are real open interest; anything
+    else's `quantity` is unrelated (seen in practice as an int32 sentinel,
+    2147483647, once misread as an OI value of 2.1 billion contracts)."""
+    from nussif_data.connectors.databento import DatabentoConnector, _STAT_TYPE_OPEN_INTEREST
+
+    class _FakeData:
+        def to_df(self):
+            return pd.DataFrame(
+                {
+                    "stat_type": [_STAT_TYPE_OPEN_INTEREST, 5, 9],  # 5 = some other stat
+                    "quantity": [1207, 2147483647, 42],
+                    "symbol": ["SPY   220408P00330000"] * 3,
+                    "instrument_id": [1, 2, 3],
+                    "ts_event": [pd.Timestamp("2022-04-07T11:30:00Z")] * 3,
+                }
+            )
+
+    class _FakeTS:
+        def get_range(self, **kw):
+            return _FakeData()
+
+    class _FakeClient:
+        timeseries = _FakeTS()
+
+    conn = DatabentoConnector.__new__(DatabentoConnector)
+    conn._cli = _FakeClient()
+    out = conn._get_oi("SPY", "2022-04-07")
+    assert (out["stat_type"] == _STAT_TYPE_OPEN_INTEREST).all()
+    assert len(out) == 2
+    assert 2147483647 not in out["quantity"].to_numpy()
+
+
 def test_massive_intraday_parse_and_rth_filter(monkeypatch, tmp_path):
     import nussif_data as nd
+    from nussif_data.connectors.massive import bars as massive_bars
 
     monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))  # never touch the real cache
 
@@ -436,14 +756,508 @@ def test_massive_intraday_parse_and_rth_filter(monkeypatch, tmp_path):
     }
     monkeypatch.setattr(nd.massive.http, "get_json", lambda *a, **k: canned)
 
-    raw = nd.massive._fetch_intraday("spy", 5, "minute")
+    raw = massive_bars.fetch_intraday(nd.massive.http, nd.massive.cfg, "spy", 5, "minute")
     assert str(raw["timestamp"].dt.tz) == ny
     assert set(raw["ticker"]) == {"SPY"}
     assert {"timestamp", "ticker", "open", "close", "vwap", "trades"} <= set(raw.columns)
     assert len(raw) == 2  # de-duped across the repeated 6-month windows
 
-    monkeypatch.setattr(nd.massive, "_fetch_intraday", lambda *a, **k: raw)
+    monkeypatch.setattr(massive_bars, "fetch_intraday", lambda *a, **k: raw)
     df = nd.massive.bars_intraday("SPY", start="2020-01-01", end="2020-12-31")  # rth=True default
     assert len(df) == 1 and df["timestamp"].iloc[0].hour == 10  # pre-market bar dropped
     df_all = nd.massive.bars_intraday("SPY", start="2020-01-01", end="2020-12-31", rth=False)
     assert len(df_all) == 2
+
+
+# --- massive connector: option_chain (offline) -----------------------------
+def test_massive_option_chain_registered():
+    assert "option_chain" in [d.name for d in nd.massive.datasets()]
+    assert callable(nd.massive.option_chain)
+    assert "massive" in nd.catalog()["option_chain"]["providers"]
+
+
+def test_massive_fetch_symbol_rejects_option_chain():
+    with pytest.raises(NotImplementedError):
+        nd.massive._fetch_symbol("option_chain", "SPY")
+
+
+def test_massive_close_window_utc_handles_dst():
+    from nussif_data.connectors.massive.options import _close_window_utc
+
+    start_jan, end_jan = _close_window_utc(pd.Timestamp("2024-01-15"), "America/New_York", "16:00", 3)
+    start_jun, end_jun = _close_window_utc(pd.Timestamp("2024-06-15"), "America/New_York", "16:00", 3)
+    # 16:00 ET is 21:00 UTC in winter (EST) and 20:00 UTC in summer (EDT)
+    assert start_jan.endswith("20:57:00+00:00")
+    assert start_jun.endswith("19:57:00+00:00")
+    assert end_jan.endswith("21:01:00+00:00")
+    assert end_jun.endswith("20:01:00+00:00")
+
+
+def test_massive_get_contracts_moneyness_none_drops_filter(monkeypatch):
+    from nussif_data.connectors.massive.options import OptionChainFetcher
+
+    conn = OptionChainFetcher.__new__(OptionChainFetcher)
+    conn.cfg = {
+        "endpoints": {"option_contracts": {"endpoint": "/v3/reference/options/contracts"}},
+        "composites": {"option_chain": {}},
+    }
+    conn.http = type("H", (), {})()
+
+    seen = {}
+
+    def _fake_get_json(path, params=None):
+        seen["path"] = path
+        seen["params"] = params
+        return {"results": [{"ticker": "O:SPY240621C00540000"}], "next_url": None}
+
+    conn.http.get_json = _fake_get_json
+    df = conn._get_contracts("SPY", "2024-06-03", 527.0, None, None, None)
+    assert len(df) == 1
+    assert "strike_price.gte" not in seen["params"]
+    assert "expiration_date.gte" not in seen["params"]
+    assert "expired" not in seen["params"]  # deliberately omitted -- see _get_contracts docstring
+
+
+def test_massive_get_contracts_default_band_filters(monkeypatch):
+    from nussif_data.connectors.massive.options import OptionChainFetcher
+
+    conn = OptionChainFetcher.__new__(OptionChainFetcher)
+    conn.cfg = {
+        "endpoints": {"option_contracts": {"endpoint": "/v3/reference/options/contracts"}},
+        "composites": {"option_chain": {}},
+    }
+    conn.http = type("H", (), {})()
+
+    seen = {}
+
+    def _fake_get_json(path, params=None):
+        seen["params"] = params
+        return {"results": [], "next_url": None}
+
+    conn.http.get_json = _fake_get_json
+    conn._get_contracts("SPY", "2024-06-03", 500.0, 0.25, 15, 60)
+    assert seen["params"]["strike_price.gte"] == pytest.approx(375.0)
+    assert seen["params"]["strike_price.lte"] == pytest.approx(625.0)
+    assert seen["params"]["expiration_date.gte"] == "2024-06-18"
+    assert seen["params"]["expiration_date.lte"] == "2024-08-02"
+
+
+def test_massive_assemble_builds_canonical_shape():
+    from nussif_data.connectors.massive.options import OptionChainFetcher
+
+    contracts_df = pd.DataFrame(
+        {
+            "ticker": ["O:SPY240621C00540000", "O:SPY240621P00540000"],
+            "underlying_ticker": ["SPY", "SPY"],
+            "contract_type": ["call", "put"],
+            "strike_price": [540.0, 540.0],
+            "expiration_date": ["2024-06-21", "2024-06-21"],
+        }
+    )
+    quotes_df = pd.DataFrame(
+        {
+            "ticker": ["O:SPY240621C00540000", "O:SPY240621P00540000"],
+            "bid_price": [1.2, 0.9],
+            "ask_price": [1.3, 1.0],
+            "bid_size": [10, 5],
+            "ask_size": [12, 6],
+            "date": ["2024-06-03", "2024-06-03"],
+            "lookback_min_used": [3, 60],
+            "sip_timestamp": [1717444857505864448, 1717444857505864448],
+        }
+    )
+    out = OptionChainFetcher._assemble(contracts_df, quotes_df)
+    assert set(out.columns) == {
+        "symbol", "date", "expiration", "strike", "right", "bid", "ask",
+        "ticker", "bid_size", "ask_size", "lookback_min_used", "timestamp",
+    }
+    assert set(out["symbol"]) == {"SPY"}
+    assert list(out["strike"]) == [540.0, 540.0]
+    assert list(out["bid"]) == [1.2, 0.9]  # renamed from bid_price
+    assert set(out["right"]) == {"C", "P"}  # derived from contract_type
+    assert pd.api.types.is_datetime64_any_dtype(out["timestamp"])
+    assert str(out["timestamp"].dt.tz) == "America/New_York"
+
+
+def test_massive_assemble_empty_quotes_is_empty():
+    from nussif_data.connectors.massive.options import OptionChainFetcher
+
+    out = OptionChainFetcher._assemble(pd.DataFrame({"ticker": []}), pd.DataFrame())
+    assert out.empty
+
+
+def test_massive_option_chain_end_to_end(monkeypatch, tmp_path):
+    import nussif_data as nd
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    monkeypatch.setenv("MASSIVE_API_KEY", "dummy")
+
+    contracts_canned = {
+        "results": [
+            {
+                "ticker": "O:SPY240621C00540000",
+                "underlying_ticker": "SPY",
+                "contract_type": "call",
+                "strike_price": 540.0,
+                "expiration_date": "2024-06-21",
+            }
+        ],
+        "next_url": None,
+    }
+    monkeypatch.setattr(nd.massive.http, "get_json", lambda *a, **k: contracts_canned)
+    monkeypatch.setattr(nd.massive.option_chain, "_spot_on", lambda sym, date_str: 538.5)
+
+    quotes_df = pd.DataFrame(
+        [
+            {
+                "ticker": "O:SPY240621C00540000",
+                "bid_price": 1.2,
+                "ask_price": 1.3,
+                "bid_size": 10,
+                "ask_size": 12,
+                "date": "2024-06-03",
+                "lookback_min_used": 3,
+                "sip_timestamp": 1717444857505864448,
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        nd.massive.option_chain,
+        "_get_quotes_concurrent",
+        lambda tickers, date_str, api_key, max_workers: quotes_df,
+    )
+
+    out = nd.massive.option_chain("SPY", date="2024-06-03").fetch()
+    assert len(out) == 1
+    assert out["symbol"].iloc[0] == "SPY"
+    assert out["right"].iloc[0] == "C"
+    assert out["bid"].iloc[0] == 1.2
+    assert "contract_type" not in out.columns
+    assert "bid_price" not in out.columns
+
+
+def test_massive_option_chain_fetch_out_writes_file(monkeypatch, tmp_path):
+    import nussif_data as nd
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    monkeypatch.setenv("MASSIVE_API_KEY", "dummy")
+
+    contracts_canned = {
+        "results": [
+            {
+                "ticker": "O:SPY240621C00540000",
+                "underlying_ticker": "SPY",
+                "contract_type": "call",
+                "strike_price": 540.0,
+                "expiration_date": "2024-06-21",
+            }
+        ],
+        "next_url": None,
+    }
+    monkeypatch.setattr(nd.massive.http, "get_json", lambda *a, **k: contracts_canned)
+    monkeypatch.setattr(nd.massive.option_chain, "_spot_on", lambda sym, date_str: 538.5)
+    quotes_df = pd.DataFrame(
+        [
+            {
+                "ticker": "O:SPY240621C00540000",
+                "bid_price": 1.2,
+                "ask_price": 1.3,
+                "bid_size": 10,
+                "ask_size": 12,
+                "date": "2024-06-03",
+                "lookback_min_used": 3,
+                "sip_timestamp": 1717444857505864448,
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        nd.massive.option_chain,
+        "_get_quotes_concurrent",
+        lambda tickers, date_str, api_key, max_workers: quotes_df,
+    )
+
+    out_path = tmp_path / "spy_chain.parquet"
+    out = nd.massive.option_chain("SPY", date="2024-06-03").fetch(out=str(out_path))
+    assert out_path.exists()
+    reloaded = pd.read_parquet(out_path)
+    assert len(reloaded) == len(out)
+    assert reloaded["right"].iloc[0] == "C"
+
+
+def test_massive_option_chain_fetch_raw_rejects_out(monkeypatch):
+    monkeypatch.setattr(
+        nd.massive.http, "get_json", lambda *a, **k: (_ for _ in ()).throw(AssertionError())
+    )
+    req = nd.massive.option_chain("SPY", date="2024-06-03", raw=True)
+    with pytest.raises(ValueError):
+        req.fetch(out="whatever.parquet")
+
+
+def test_massive_option_chain_needs_symbol():
+    with pytest.raises(ValueError):
+        nd.massive.option_chain(date="2024-06-03")
+
+
+def test_massive_option_chain_rejects_date_and_range_together():
+    with pytest.raises(ValueError):
+        nd.massive.option_chain("SPY", date="2024-06-03", start="2024-06-03", end="2024-06-05")
+
+
+def test_massive_option_chain_rejects_neither_date_nor_range():
+    with pytest.raises(ValueError):
+        nd.massive.option_chain("SPY")
+
+
+def test_massive_option_chain_rejects_spot_with_range():
+    with pytest.raises(ValueError):
+        nd.massive.option_chain("SPY", start="2024-06-03", end="2024-06-05", spot=500)
+
+
+def test_massive_option_chain_returns_request_not_dataframe():
+    from nussif_data.connectors.massive.options import OptionChainRequest
+
+    req = nd.massive.option_chain("SPY", date="2024-06-03")
+    assert isinstance(req, OptionChainRequest)
+    assert not isinstance(req, pd.DataFrame)
+    assert callable(req.fetch) and callable(req.estimate) and callable(req.download)
+
+
+def _fake_request(symbol="SPY", date_strs=("2024-06-03", "2024-06-04", "2024-06-05"), raw=False):
+    from nussif_data.connectors.massive.options import OptionChainFetcher, OptionChainRequest
+
+    fetcher = OptionChainFetcher.__new__(OptionChainFetcher)
+    fetcher.cfg = nd.massive.cfg
+    fetcher.http = nd.massive.http
+    return OptionChainRequest(
+        fetcher, [symbol], list(date_strs), None, 0.25, 15, 60, 80, raw
+    )
+
+
+def test_massive_option_chain_fetch_embeds_metadata_without_out(monkeypatch, tmp_path):
+    import pyarrow.parquet as pq
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    req = _fake_request(date_strs=("2024-06-03",))
+    monkeypatch.setattr(
+        req._fetcher, "_one_chain", lambda *a, **k: pd.DataFrame({"ticker": ["O:SPY1"], "bid_price": [1.0]})
+    )
+    req.fetch()  # no out= at all
+    path = tmp_path / "massive" / "option_chain" / "SPY" / "2024-06-03" / "m0.25_dte15-60.parquet"
+    meta = pq.read_schema(str(path)).metadata
+    assert meta[b"nd_vendor"] == b"massive"
+    assert meta[b"nd_symbol"] == b"SPY"
+    assert meta[b"nd_date"] == b"2024-06-03"
+    assert b"nd_added_columns" in meta
+
+
+def test_massive_option_chain_raw_and_default_share_one_cache_file(monkeypatch, tmp_path):
+    """raw=True and raw=False produce identical content now -- they must
+    share one cache key, not write the same data twice under two paths."""
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    calls = []
+
+    def _one_chain(sym, date_str, *a, **k):
+        calls.append(date_str)
+        return pd.DataFrame({"ticker": ["O:SPY1"], "bid_price": [1.0]})
+
+    req_default = _fake_request(date_strs=("2024-06-03",), raw=False)
+    monkeypatch.setattr(req_default._fetcher, "_one_chain", _one_chain)
+    req_default.fetch()
+
+    req_raw = _fake_request(date_strs=("2024-06-03",), raw=True)
+    monkeypatch.setattr(req_raw._fetcher, "_one_chain", _one_chain)
+    req_raw.fetch()  # must hit the same cache file -- no second call
+
+    assert calls == ["2024-06-03"]  # only fetched once, raw=True reused the cache
+    assert req_default._cache_key("SPY", "2024-06-03") == req_raw._cache_key("SPY", "2024-06-03")
+
+
+def test_massive_option_chain_download_returns_summary_not_data(monkeypatch, tmp_path):
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    req = _fake_request(date_strs=("2024-06-03",))
+    monkeypatch.setattr(req._fetcher, "_one_chain", lambda *a, **k: pd.DataFrame({"x": [1]}))
+    summary = req.download()
+    assert not isinstance(summary, pd.DataFrame)
+    assert summary == {"succeeded": [{"symbol": "SPY", "date": "2024-06-03"}], "failed": []}
+
+
+def test_massive_option_chain_download_skips_and_continues_on_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    req = _fake_request(date_strs=("2024-06-03", "2024-06-04", "2024-06-05"))
+
+    def _one_chain(sym, date_str, *a, **k):
+        if date_str == "2024-06-04":
+            raise RateLimited("massive: 429 after retries")
+        return pd.DataFrame({"x": [1]})
+
+    monkeypatch.setattr(req._fetcher, "_one_chain", _one_chain)
+    summary = req.download()  # must not raise, despite the middle day failing
+    assert [d["date"] for d in summary["succeeded"]] == ["2024-06-03", "2024-06-05"]
+    assert len(summary["failed"]) == 1
+    assert summary["failed"][0]["date"] == "2024-06-04"
+    assert "429" in summary["failed"][0]["error"]
+
+
+def test_massive_option_chain_download_resumes_only_failed_days(monkeypatch, tmp_path):
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    req = _fake_request(date_strs=("2024-06-03", "2024-06-04"))
+    calls = []
+
+    def _flaky_once(sym, date_str, *a, **k):
+        calls.append(date_str)
+        if date_str == "2024-06-04":
+            raise RateLimited("massive: 429 after retries")
+        return pd.DataFrame({"x": [1]})
+
+    monkeypatch.setattr(req._fetcher, "_one_chain", _flaky_once)
+    first = req.download()
+    assert len(first["failed"]) == 1
+    assert calls == ["2024-06-03", "2024-06-04"]
+
+    # second run: 06-03 already cached (must not be re-fetched), retry only 06-04
+    calls.clear()
+    monkeypatch.setattr(req._fetcher, "_one_chain", lambda sym, date_str, *a, **k: (
+        calls.append(date_str) or pd.DataFrame({"x": [1]})
+    ))
+    second = req.download()
+    assert calls == ["2024-06-04"]  # only the real fetch -- 06-03 served from disk, no call
+    assert len(second["failed"]) == 0
+    # both now have valid data available -- 06-03 was already cached, 06-04 just succeeded
+    assert [d["date"] for d in second["succeeded"]] == ["2024-06-03", "2024-06-04"]
+
+
+def test_massive_option_chain_estimate_skips_cached_day(monkeypatch, tmp_path):
+    from nussif_data.cache import cached
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+
+    req = nd.massive.option_chain("SPY", date="2024-06-03")
+    # simulate an already-fetched day at the exact cache key .fetch()/.estimate() share
+    cached(req._cache_key("SPY", "2024-06-03"), lambda: pd.DataFrame({"x": [1]}))
+
+    def _boom(*a, **k):
+        raise AssertionError("estimate() should not probe an already-cached day")
+
+    monkeypatch.setattr(nd.massive.http, "get_json", _boom)
+    est = req.estimate()
+    assert est["days_cached"] == 1
+    assert est["days_to_fetch"] == 0
+    assert est["est_seconds"] == 0.0
+
+
+def test_massive_option_chain_estimate_projects_from_contract_count(monkeypatch, tmp_path):
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    monkeypatch.setattr(nd.massive.option_chain, "_spot_on", lambda sym, date_str: 500.0)
+    contracts_canned = {"results": [{"ticker": f"O:SPY{i}"} for i in range(200)], "next_url": None}
+    monkeypatch.setattr(nd.massive.http, "get_json", lambda *a, **k: contracts_canned)
+
+    req = nd.massive.option_chain("SPY", date="2024-06-03", max_workers=80)
+    est = req.estimate()
+
+    spec = nd.massive.cfg["composites"]["option_chain"]
+    rate = spec.get("contracts_per_worker_second", 1.0)
+    overhead = spec.get("contracts_fetch_overhead_s", 1.5)
+    expected = overhead + 200 / (80 * rate)
+
+    assert est["days_to_fetch"] == 1
+    assert est["per_day"][0]["contracts"] == 200
+    assert est["per_day"][0]["est_seconds"] == round(expected, 1)
+    assert est["est_seconds"] == round(expected, 1)
+
+
+# --- massive connector: exchanges (offline) ---------------------------------
+def test_massive_exchanges_registered():
+    assert "exchanges" in [d.name for d in nd.massive.datasets()]
+    assert callable(nd.massive.exchanges)
+
+
+def test_massive_exchanges_fetch_and_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+
+    canned = {
+        "results": [
+            {"id": 302, "name": "Chicago Board Options Exchange", "mic": "XCBO"},
+            {"id": 322, "name": "Cboe C2 Options Exchange", "mic": "C2OX"},
+        ]
+    }
+    seen = {}
+
+    def _fake_get_json(path, params=None):
+        seen["path"] = path
+        seen["params"] = params
+        return canned
+
+    monkeypatch.setattr(nd.massive.http, "get_json", _fake_get_json)
+    df = nd.massive.exchanges("options")
+    assert seen["params"]["asset_class"] == "options"
+    assert len(df) == 2
+    assert df.loc[df["id"] == 322, "name"].iloc[0] == "Cboe C2 Options Exchange"
+
+    # second call hits the cache -- get_json must not fire again
+    monkeypatch.setattr(
+        nd.massive.http,
+        "get_json",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should be cached")),
+    )
+    df2 = nd.massive.exchanges("options")
+    assert len(df2) == 2
+
+
+def test_massive_exchanges_needs_asset_class():
+    with pytest.raises(TypeError):
+        nd.massive.exchanges()
+
+
+def test_massive_exchanges_empty_raises(monkeypatch, tmp_path):
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    monkeypatch.setattr(nd.massive.http, "get_json", lambda *a, **k: {"results": []})
+    with pytest.raises(UpstreamError):
+        nd.massive.exchanges("options")
+
+
+# --- massive connector: trades (offline) ------------------------------------
+def test_massive_trades_registered():
+    assert "trades" in [d.name for d in nd.massive.datasets()]
+    assert callable(nd.massive.trades)
+
+
+def test_massive_trades_needs_ticker():
+    with pytest.raises(ValueError):
+        nd.massive.trades(date="2024-06-03")
+
+
+def test_massive_trades_fetch_paginates_and_derives_timestamp(monkeypatch, tmp_path):
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+
+    page1 = {
+        "results": [
+            {"price": 1.2, "size": 3, "sip_timestamp": 1717412400000000000, "exchange": 322},
+        ],
+        "next_url": "https://api.massive.com/v3/trades/O:SPY240621C00540000?cursor=abc",
+    }
+    page2 = {
+        "results": [
+            {"price": 1.3, "size": 1, "sip_timestamp": 1717412401000000000, "exchange": 301},
+        ],
+        "next_url": None,
+    }
+    calls = []
+
+    def _fake_get_json(path, params=None):
+        calls.append(path)
+        return page1 if len(calls) == 1 else page2
+
+    monkeypatch.setattr(nd.massive.http, "get_json", _fake_get_json)
+    df = nd.massive.trades("O:SPY240621C00540000", date="2024-06-03")
+    assert len(calls) == 2  # paginated via next_url
+    assert len(df) == 2
+    assert (df["ticker"] == "O:SPY240621C00540000").all()
+    assert str(df["timestamp"].dt.tz) == "America/New_York"
+    assert {"price", "size", "exchange"} <= set(df.columns)  # vendor fields kept
+
+
+def test_massive_trades_empty_raises(monkeypatch, tmp_path):
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    monkeypatch.setattr(nd.massive.http, "get_json", lambda *a, **k: {"results": []})
+    with pytest.raises(UpstreamError):
+        nd.massive.trades("O:SPY240621C00540000", date="2024-06-03")

@@ -2,6 +2,15 @@
 
 Cache location: $NUSSIF_DATA_CACHE, else ~/.cache/nussif-data/. Keys may contain
 '/' -> nested dirs (e.g. "cboe/VIX", "fred/BAA10Y", "massive/bars/SPY").
+
+Output location (every accessor's `out=`): $NUSSIF_DATA_OUT, else the current
+working directory -- see out_dir(). This is a self-serve tool (no shared
+infra yet, each user runs their own copy), so a script/notebook should never
+hardcode where its output lands: a bare filename in `out=` resolves against
+out_dir(), which each user points wherever they want (a scratch dir, a
+personal synced folder, wherever) via the env var -- same convention
+cache_dir() already uses for $NUSSIF_DATA_CACHE. An absolute path in `out=`
+is respected as-is, not redirected.
 """
 
 from __future__ import annotations
@@ -10,6 +19,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 import pandas as pd
 
@@ -18,6 +28,15 @@ def cache_dir() -> str:
     d = os.environ.get("NUSSIF_DATA_CACHE") or os.path.join(
         os.path.expanduser("~"), ".cache", "nussif-data"
     )
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def out_dir() -> str:
+    """Default directory a relative `out=` path resolves against --
+    $NUSSIF_DATA_OUT, else the current working directory. See this module's
+    own docstring for why nothing should hardcode this instead."""
+    d = os.environ.get("NUSSIF_DATA_OUT") or os.getcwd()
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -35,14 +54,61 @@ def http_get(url: str, timeout: int = 60, retries: int = 3) -> bytes:
     raise RuntimeError(f"GET failed {url}: {last}")
 
 
-def cached(key: str, build_fn, refresh: bool = False) -> pd.DataFrame:
-    path = os.path.join(cache_dir(), *key.split("/")) + ".parquet"
+def _path_for(key: str) -> str:
+    return os.path.join(cache_dir(), *key.split("/")) + ".parquet"
+
+
+def write_parquet(df: pd.DataFrame, path: str, metadata: dict[str, str] | None = None) -> None:
+    """The one place that actually writes a parquet file for this package --
+    `cached()` and `_util.write_frame()` both call this, so provenance
+    metadata is embedded identically whichever path a file was written
+    through, not just deliberate `out=` exports."""
+    if metadata:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        table = pa.Table.from_pandas(df, preserve_index=False)
+        existing = table.schema.metadata or {}
+        combined = {**existing, **{k.encode(): v.encode() for k, v in metadata.items()}}
+        pq.write_table(table.replace_schema_metadata(combined), path)
+    else:
+        df.to_parquet(path, index=False)
+
+
+def cached(
+    key: str, build_fn, refresh: bool = False, metadata: dict[str, str] | None = None
+) -> pd.DataFrame:
+    """`metadata` -- string key/value pairs embedded as real Parquet
+    file-level metadata (see `write_parquet`) on this specific write. Only
+    applied when the cache is actually (re)built -- reading an existing
+    cache hit never rewrites it, so passing `metadata` doesn't retroactively
+    add it to a file already on disk from before this was called with it."""
+    path = _path_for(key)
     if os.path.exists(path) and not refresh:
         return pd.read_parquet(path)
     df = build_fn()
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    df.to_parquet(path, index=False)
+    # write atomically -- build the file fully under a temp name, then swap it
+    # into place with one filesystem-level rename, so a reader (this process
+    # next run, or another one sharing the cache dir) never sees a partial
+    # parquet file, e.g. if this process is killed mid-write during a long
+    # option_chain backfill.
+    tmp = f"{path}.tmp.{uuid.uuid4().hex}"
+    try:
+        write_parquet(df, tmp, metadata)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
     return df
+
+
+def is_cached(key: str) -> bool:
+    """Whether `key` already has a cached result on disk -- lets a caller skip
+    work for free (no build_fn call) instead of paying for a fetch just to
+    find out it would've been a cache hit anyway."""
+    return os.path.exists(_path_for(key))
 
 
 def clear_cache(prefix: str | None = None) -> int:

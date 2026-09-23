@@ -50,7 +50,7 @@ from .core.errors import (
     UpstreamError,
 )
 
-__version__ = "0.6.0"
+__version__ = "0.7.2"
 __all__ = [
     "REGISTRY",
     "AuthError",
@@ -83,7 +83,13 @@ alphavantage = AlphaVantageConnector(_cfg["alphavantage"])
 databento = DatabentoConnector(_cfg["databento"])
 
 REGISTRY = ConnectorRegistry()
-for _c in (cboe, fred, massive, alphavantage, databento):
+# alphavantage/databento register before massive -- massive.option_chain() is new
+# (adds a third provider for the "option_chain" dataset), and the registry's "first
+# registered wins" rule for a dataset's declared-primary provider would otherwise
+# silently bump alphavantage out of a role it already held. Doesn't affect calling
+# nd.massive.option_chain(...) directly -- only the registry's own primary-provider
+# bookkeeping (nd.catalog(), REGISTRY.for_dataset()).
+for _c in (cboe, fred, alphavantage, databento, massive):
     REGISTRY.register(_c)
 
 

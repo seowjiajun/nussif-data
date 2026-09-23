@@ -1,19 +1,36 @@
 # nussif-data catalog — connectors and the datasets they serve.
 # The *how to reach it* (URLs, params, auth, rate limits). Connectors own parsing.
 # No symbol lists: every accessor takes explicit symbols and any valid one works.
+#
+# Each connector splits its datasets into two kinds:
+#   endpoints:   pure vendor calls. One name -> one vendor call (a REST path, or
+#                an SDK schema/dataset unit for a non-REST connector), named and
+#                shaped exactly as the vendor's own docs do. Every path/template
+#                lives in exactly one place here -- nowhere else declares one.
+#   composites:  datasets THIS LIBRARY defined, not the vendor's own -- built by
+#                combining one or more endpoints:, named in `uses:` instead of
+#                re-declaring their paths (validated against endpoints: at
+#                catalog-load time, so a typo'd/renamed endpoint fails fast).
+#                A composite can `uses:` a single endpoint too -- e.g. Massive's
+#                daily_bars/intraday_bars are both the SAME custom_bars endpoint,
+#                just parameterized differently; that's still "we defined this
+#                slice of the vendor's concept," so it's a composite, not a
+#                second copy of the endpoint.
+# (databento hasn't been migrated to this shape yet -- still the flat `datasets:`
+# form; its connector code reads it that way until that lands separately.)
 
 connectors:
 
   cboe:
     auth: none
-    datasets:
+    endpoints:
       vol_index:                      # -> nussif_data.cboe.vol_index("VIX", "VIX3M")
         url_template: "https://cdn.cboe.com/api/global/us_indices/daily_prices/{symbol}_History.csv"
 
   fred:
     auth: none
     rate_limit_rpm: 90               # fredgraph.csv 404s under burst -> pace it
-    datasets:
+    endpoints:
       macro_series:                   # -> nussif_data.fred.series("BAA10Y", "UNRATE")
         # FRED's own series ids, verbatim -- no invented aliases. Look one up at
         # https://fred.stlouisfed.org, or see README.md for ones this project uses.
@@ -29,17 +46,66 @@ connectors:
       vendor: massive               # -> nussif_data._config.get_key("massive")
     base_url: "https://api.massive.com"
     rate_limit_rpm: 40              # shared key -> keep low
-    datasets:
-      daily_bars:                     # -> nussif_data.massive.bars("SPY", "QQQ")
-        endpoint: "/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
+    endpoints:
+      custom_bars:                   # Massive's own name: "Custom Bars (OHLC)" --
+        # https://massive.com/docs/rest/stocks/aggregates/custom-bars. ONE endpoint
+        # for any multiplier/timespan -- daily_bars and intraday_bars below are both
+        # this same endpoint, just parameterized differently, not two vendor calls.
+        endpoint: "/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{start}/{end}"
         params: {adjusted: "true", sort: "asc", limit: "50000"}
+      option_contracts:               # Massive's own options reference-data endpoint
+        endpoint: "/v3/reference/options/contracts"
+      quotes:                          # Massive's own "Quotes" -- one route, one
+        # ticker per call; supports stocks/options/fx tickers, only called here
+        # with option contract tickers -- see option_chain.max_workers below.
+        endpoint: "/v3/quotes/{ticker}"
+      trades:                          # -> nussif_data.massive.trades(ticker, date=...)
+        # Massive's own "Trades" -- one route, one ticker per call, same
+        # stocks/options/fx convention as quotes above; only called here with
+        # option contract tickers. Tick-level prints, paginated (up to 50k/page).
+        endpoint: "/v3/trades/{ticker}"
+      exchanges:                       # -> nussif_data.massive.exchanges(asset_class)
+        # asset_class is required, not defaulted -- stocks/options/crypto/fx/futures
+        # are each a disjoint id space; "options" (ids 300-325) decodes
+        # option_chain()'s own ask_exchange/bid_exchange.
+        endpoint: "/v3/reference/exchanges"
+    composites:
+      daily_bars:                     # -> nussif_data.massive.bars("SPY", "QQQ")
+        uses: [custom_bars]
+        multiplier: 1
+        timespan: day
         history_start: "2003-01-01"
         trim_gap_days: 15
       intraday_bars:                  # -> nussif_data.massive.bars_intraday("SPY", multiplier=5)
-        endpoint: "/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{start}/{end}"
-        params: {adjusted: "true", sort: "asc", limit: "50000"}
+        uses: [custom_bars]
         history_start: "2007-01-01"   # intraday history is thinner pre-2007
         chunk_months: 6               # 6-month request windows stay under the 50k row cap
+      option_chain:                   # -> nussif_data.massive.option_chain("SPY", date="2024-06-03")
+        uses: [option_contracts, quotes]
+        close_tz: America/New_York
+        close_time: "16:00"
+        fallback_lookbacks_min: [3, 60, 390]  # narrow window first, widen on empty (illiquid contracts)
+        default_moneyness: 0.25       # keep strikes within +-25% of spot
+        default_min_dte: 15           # raise it to skip the daily/weekly expiries
+        default_max_dte: 60
+        history_start: "2014-01-01"   # Massive's real SPY options coverage -- see
+        # notebooks/data_exploration/massive.ipynb's year-sampling cell; earlier
+        # as_of dates returned 0 contracts in real testing, not confirmed against
+        # Massive's own docs as *the* official start, just the empirically observed one
+        max_workers: 80                # per-contract EOD quote fetch concurrency (Massive's
+        # /v3/quotes endpoint takes one ticker per call, unlike Databento's batched
+        # cbbo-1m -- see connectors/massive/options.py's option_chain() docstring). 80 is
+        # the last level validated clean (0 429s, 0 connection errors) after adding
+        # connection pooling in notebooks/data_exploration/massive.ipynb; not a
+        # confirmed hard ceiling, just the last real, tested-clean data point.
+        contracts_per_worker_second: 1.0   # option_chain.estimate()'s throughput
+        # calibration -- rough, from live session observations (~100-135
+        # contracts/sec at max_workers 80-150), NOT a precise benchmark: 429s,
+        # retries, and the narrow-window-then-fallback ladder on illiquid
+        # contracts all add real variance this constant doesn't model. Treat
+        # estimate()'s output as order-of-magnitude, not an ETA.
+        contracts_fetch_overhead_s: 1.5    # fixed per-day cost (contracts listing
+        # + spot lookup) on top of the per-contract quote-fetch projection.
 
   alphavantage:
     auth:
@@ -48,8 +114,11 @@ connectors:
       vendor: alphavantage         # -> nussif_data._config.get_key("alphavantage")
     base_url: "https://www.alphavantage.co"
     rate_limit_rpm: 30            # HISTORICAL_OPTIONS is premium-only; premium is 75+ req/min
-    datasets:
+    endpoints:
       option_chain:                 # -> nussif_data.alphavantage.option_chain("SPY", date="2024-06-03")
+        # Alpha Vantage's own HISTORICAL_OPTIONS: one request already returns the
+        # whole EOD chain -- genuinely pure, unlike massive's/databento's own
+        # option_chain (both composites, assembled from 2 separate vendor calls).
         endpoint: "/query"
         params: {function: HISTORICAL_OPTIONS}
         history_start: "2008-01-01"  # one request = one full EOD chain for a (symbol, date)

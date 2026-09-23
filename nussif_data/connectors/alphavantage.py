@@ -113,7 +113,7 @@ class AlphaVantageConnector(Connector):
 
     # -- internals --
     def _fetch_chain(self, symbol: str, date) -> pd.DataFrame:
-        spec = self.cfg["datasets"]["option_chain"]
+        spec = self.cfg["endpoints"]["option_chain"]
         params = {**spec.get("params", {}), "symbol": symbol}
         if date is not None:
             params["date"] = str(date)

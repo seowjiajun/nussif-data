@@ -21,12 +21,17 @@ The VRP panel is assembled inline in the `nussif-research` repo (`notebooks/vrp_
 
 Kept here because P2's chain-history decision depends on them.
 
+Earliest-date probe re-run **2026-09-05** (shared key, base `https://api.massive.com`,
+`apiKey` query auth); scripts in scratchpad. Findings below supersede the earlier "back to 2012" note.
+
 | what | endpoint | status |
 |---|---|---|
-| Option contracts (incl. expired) | `/v3/reference/options/contracts` | ✅ back to 2012; `as_of` param IGNORED |
-| Option daily bars | `/v2/aggs/ticker/{O:...}/range/1/day/...` | ✅ trade OHLC, **no bid/ask, no OI**; 1 call/contract (whole life) |
-| Option EOD NBBO | `/v3/quotes/{O:...}?timestamp.gte=...T{close-5m}&order=desc&limit=1` | ✅ real bid/ask, back to **2022-03-07**; 1 call per contract-**day** |
-| Chain snapshot | `/v3/snapshot/options/{underlier}` | ⚠️ **current only**; greeks+IV+OI, **no bid/ask** on this tier |
+| Option contracts (incl. expired) | `/v3/reference/options/contracts` | ✅ metadata back to **2010-02-20** (earliest expiration in DB); no pricing behind pre-2014 contracts. `as_of` param IGNORED |
+| Option daily bars | `/v2/aggs/ticker/{O:...}/range/1/day/...` | ✅ trade OHLC + vol + VWAP, **no bid/ask, no OI**; 1 call/contract (whole life). **Hard floor 2014-06-02** — every expiry living past that date starts exactly there, nothing before |
+| Option trades (tick) | `/v3/trades/{O:...}` | ✅ same **2014-06-02** floor (bars are built from these) |
+| Option EOD NBBO | `/v3/quotes/{O:...}?timestamp.gte=...T{close-5m}&order=desc&limit=1` | ✅ real bid/ask, back to **2022-03-07** (09:30 ET, same first day for every contract); 1 call per contract-**day** |
+| Chain snapshot | `/v3/snapshot/options/{underlier}` | ⚠️ **current only**; greeks+IV+OI, **no bid/ask** on this tier. `as_of=<past date>` silently ignored — 2015 / 2018 / 2020 / 2022 all return today's chain verbatim |
+| Index options (I:VIX, I:VIX1D, …) | `/v2/aggs/ticker/I:VIX/...` | ❌ **403 NOT_AUTHORIZED** — plan has no index data |
 | Grouped daily (all names, 1 call) | `/v2/aggs/grouped/.../market/{m}/{date}` | stocks/fx/crypto only — **not options** |
 | Flat files (S3) | `s3://flatfiles` @ `files.massive.com` | ❌ **CONFIRMED NOT available on this account** (2026-09) |
 

@@ -5,6 +5,8 @@ from collections.abc import Sequence
 
 import pandas as pd
 
+from .cache import out_dir, write_parquet
+
 
 def flatten_symbols(args: Sequence) -> list[str]:
     """Accept either varargs ("A", "B") or a single list/tuple/set passed as the
@@ -52,9 +54,24 @@ _WRITERS = {
 }
 
 
-def write_frame(df: pd.DataFrame, path) -> str:
-    """Write `df` to `path`; format from the extension (.parquet/.csv/.json/.feather/.xlsx)."""
+def write_frame(df: pd.DataFrame, path, *, metadata: dict[str, str] | None = None) -> str:
+    """Write `df` to `path`; format from the extension (.parquet/.csv/.json/.feather/.xlsx).
+
+    A relative `path` resolves against `cache.out_dir()` ($NUSSIF_DATA_OUT, else
+    the cwd) -- never hardcode a folder in a script/notebook and expect it to
+    exist on someone else's machine; each user points $NUSSIF_DATA_OUT at
+    wherever they want their own output to land. An absolute path is used as-is.
+
+    `metadata` -- string key/value pairs embedded as real Parquet file-level
+    metadata (readable without loading the data: `pyarrow.parquet.read_schema
+    (path).metadata`), not just a row/column in the data itself. Parquet-only
+    (.parquet/.pq); ignored for other formats, which have no equivalent
+    concept. Meant for provenance that should travel with the file forever --
+    e.g. which columns a connector added/renamed vs. which are untouched
+    vendor fields -- see connectors/massive/options.py's own use of this."""
     p = str(path)
+    if not os.path.isabs(p):
+        p = os.path.join(out_dir(), p)
     ext = os.path.splitext(p)[1].lower().lstrip(".")
     if ext not in _WRITERS:
         raise ValueError(
@@ -64,5 +81,8 @@ def write_frame(df: pd.DataFrame, path) -> str:
     d = os.path.dirname(p)
     if d:
         os.makedirs(d, exist_ok=True)
-    _WRITERS[ext](df, p)
+    if metadata and ext in ("parquet", "pq"):
+        write_parquet(df, p, metadata)
+    else:
+        _WRITERS[ext](df, p)
     return p

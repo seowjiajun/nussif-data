@@ -44,7 +44,7 @@ class FredConnector(Connector):
         return symbol.upper()
 
     def _fetch_symbol(self, dataset: str, symbol: str, raw: bool = False) -> pd.DataFrame:
-        d = self.cfg["datasets"][dataset]
+        d = self.cfg["endpoints"][dataset]
         fid = symbol.upper()
         payload = self.http.get_bytes(
             d["url_template"].format(id=fid, history_start=d["history_start"])

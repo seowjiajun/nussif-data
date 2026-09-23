@@ -8,22 +8,26 @@ This is a deliberately small proof slice (default: SPY, last 3 trading days, one
 expiry, +-5% strikes). Widen the CONFIG knobs once the shape looks right. The
 script is rate-limited and resumable (re-run to fill gaps; done contracts skipped).
 
-Output: nussif-volpremia/data/roll/{UNDERLIER}_chain.parquet
+Output: <out_dir()>/roll/{UNDERLIER}_chain.parquet -- $NUSSIF_DATA_OUT, else the
+cwd (same convention every other nussif_data out= uses; nothing here hardcodes
+a folder, since this is a self-serve tool and everyone's output lands wherever
+they've pointed $NUSSIF_DATA_OUT).
 """
 
 from __future__ import annotations
 
-import http.client
-import json
 import os
 import sys
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
+
+from nussif_data import get_key
+from nussif_data._catalog import connector_cfg
+from nussif_data.cache import out_dir
+from nussif_data.core import HttpClient, QueryKeyAuth
 
 # ------------------------------- CONFIG -------------------------------------
 UNDERLIER = "SPY"
@@ -32,83 +36,56 @@ MONEYNESS_BAND = 0.05  # keep strikes within +-5% of spot (on the first day)
 DTE_MAX = 45  # only expirations within this many days of the first day
 DTE_MIN = 0
 N_EXPIRATIONS = 1  # cap distinct expirations (nearest first) -- raise to widen
-RATE_LIMIT_RPM = 40  # be gentle: shared key, 9 users. Adaptive backoff on 429.
 # --------------------------------------------------------------------------
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-PROJECT = os.path.dirname(_HERE)
-OUT_DIR = os.path.join(PROJECT, "data", "roll")
+OUT_DIR = os.path.join(out_dir(), "roll")
 OUT_PARQUET = os.path.join(OUT_DIR, f"{UNDERLIER}_chain.parquet")
-BASE = "https://api.massive.com"
+
+# base_url / rate_limit_rpm / auth / endpoint paths all come from catalog.yaml
+# -- the same source nussif_data.massive uses -- instead of being duplicated
+# here. massive's catalog is split into endpoints: (pure vendor calls) and
+# composites: (datasets built from them, e.g. daily_bars = the custom_bars
+# endpoint pinned to multiplier=1/timespan=day) -- see catalog.yaml's own
+# header comment for the full convention.
+_CFG = connector_cfg("massive")
+_CONTRACTS_PATH = _CFG["endpoints"]["option_contracts"]["endpoint"]
+
+try:
+    get_key("massive")  # fail fast, same check the old load_key() did
+except RuntimeError as e:
+    sys.exit(str(e))
+
+# rate-limit/retry/backoff/auth all come from the shared HttpClient -- no
+# hand-rolled urllib loop here.
+H = HttpClient(
+    base_url=_CFG["base_url"],
+    rate_limit_rpm=_CFG.get("rate_limit_rpm", 40),
+    auth=QueryKeyAuth(_CFG.get("auth", {}).get("param", "apiKey"), lambda: get_key("massive")),
+    name="roll_chain",
+)
+CALLS = 0
 
 
-def load_key() -> str:
-    # same resolution as the library: $MASSIVE_API_KEY -> ~/.config/nussif-data/keys.env
-    from nussif_data import get_key
-
-    try:
-        return get_key("massive")
-    except RuntimeError as e:
-        sys.exit(str(e))
-
-
-KEY = load_key()
-
-
-# -------------------------- rate-limited HTTP ------------------------------
-class Http:
-    def __init__(self, rpm):
-        self.min_interval = 60.0 / rpm
-        self.last = 0.0
-        self.calls = 0
-
-    def get(self, path, params=None, retries=4):
-        params = dict(params or {})
-        params["apiKey"] = KEY
-        url = f"{BASE}{path}?{urllib.parse.urlencode(params)}"
-        for attempt in range(retries):
-            wait = self.min_interval - (time.monotonic() - self.last)
-            if wait > 0:
-                time.sleep(wait)
-            self.last = time.monotonic()
-            self.calls += 1
-            req = urllib.request.Request(url, method="GET")
-            req.add_header("Connection", "close")
-            try:
-                with urllib.request.urlopen(req, timeout=30) as r:
-                    return json.loads(r.read().decode("utf-8", "replace"))
-            except urllib.error.HTTPError as e:
-                if e.code == 429:
-                    back = 5 * (attempt + 1)
-                    print(f"    429 rate-limited; backing off {back}s")
-                    time.sleep(back)
-                    self.min_interval *= 1.5  # permanently slow down
-                    continue
-                if e.code in (500, 502, 503, 504) and attempt < retries - 1:
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                body = e.read().decode("utf-8", "replace")[:200]
-                raise RuntimeError(f"HTTP {e.code} on {path}: {body}")
-            except (urllib.error.URLError, http.client.HTTPException, OSError):
-                if attempt < retries - 1:
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                raise
-        raise RuntimeError(f"gave up on {path}")
-
-
-H = Http(RATE_LIMIT_RPM)
+def get_json(path_or_url: str, params: dict | None = None) -> dict:
+    global CALLS
+    CALLS += 1
+    return H.get_json(path_or_url, params)
 
 
 # ------------------------------ steps ------------------------------------
+_CUSTOM_BARS = _CFG["endpoints"]["custom_bars"]
+_DAILY = _CFG["composites"]["daily_bars"]
+
+
 def recent_trading_days(n):
     """Ask the API: pull ~15 calendar days of underlier daily bars, take the last n dates."""
     end = date.today()
     start = end - timedelta(days=20)
-    j = H.get(
-        f"/v2/aggs/ticker/{UNDERLIER}/range/1/day/{start}/{end}",
-        {"adjusted": "true", "sort": "asc", "limit": "50000"},
+    path = _CUSTOM_BARS["endpoint"].format(
+        ticker=UNDERLIER, multiplier=_DAILY["multiplier"], timespan=_DAILY["timespan"],
+        start=start, end=end,
     )
+    j = get_json(path, _CUSTOM_BARS.get("params", {}))
     rows = j.get("results") or []
     if not rows:
         sys.exit("no underlier bars returned; check entitlement/date")
@@ -120,26 +97,24 @@ def list_contracts(first_day, spot):
     lo, hi = spot * (1 - MONEYNESS_BAND), spot * (1 + MONEYNESS_BAND)
     exp_lo = first_day + timedelta(days=DTE_MIN)
     exp_hi = first_day + timedelta(days=DTE_MAX)
-    out, cursor = [], None
+    params = {
+        "underlying_ticker": UNDERLIER,
+        "expiration_date.gte": exp_lo.isoformat(),
+        "expiration_date.lte": exp_hi.isoformat(),
+        "strike_price.gte": f"{lo:.2f}",
+        "strike_price.lte": f"{hi:.2f}",
+        "limit": "1000",
+        "expired": "false",
+    }
+    out, next_url = [], None
     while True:
-        params = {
-            "underlying_ticker": UNDERLIER,
-            "expiration_date.gte": exp_lo.isoformat(),
-            "expiration_date.lte": exp_hi.isoformat(),
-            "strike_price.gte": f"{lo:.2f}",
-            "strike_price.lte": f"{hi:.2f}",
-            "limit": "1000",
-            "expired": "false",
-        }
-        if cursor:
-            params = {"cursor": cursor}
-        j = H.get("/v3/reference/options/contracts", params)
+        # next_url from Massive is an absolute URL -- HttpClient passes it straight
+        # through instead of re-hitting base_url (same pagination as
+        # nussif_data/connectors/massive/options.py::OptionChainFetcher._get_contracts).
+        j = get_json(next_url or _CONTRACTS_PATH, {} if next_url else params)
         out.extend(j.get("results") or [])
-        nxt = j.get("next_url")
-        if not nxt:
-            break
-        cursor = urllib.parse.parse_qs(urllib.parse.urlparse(nxt).query).get("cursor", [None])[0]
-        if not cursor:
+        next_url = j.get("next_url")
+        if not next_url:
             break
     # nearest N_EXPIRATIONS expirations
     exps = sorted({c["expiration_date"] for c in out})[:N_EXPIRATIONS]
@@ -149,10 +124,11 @@ def list_contracts(first_day, spot):
 
 def fetch_bars(contract, d0, d1):
     tk = contract["ticker"]
-    j = H.get(
-        f"/v2/aggs/ticker/{urllib.parse.quote(tk)}/range/1/day/{d0}/{d1}",
-        {"adjusted": "true", "sort": "asc", "limit": "50000"},
+    path = _CUSTOM_BARS["endpoint"].format(
+        ticker=urllib.parse.quote(tk), multiplier=_DAILY["multiplier"], timespan=_DAILY["timespan"],
+        start=d0, end=d1,
     )
+    j = get_json(path, _CUSTOM_BARS.get("params", {}))
     rows = []
     for r in j.get("results") or []:
         rows.append(
@@ -205,7 +181,7 @@ def main():
     for i, c in enumerate(todo, 1):
         all_rows.extend(fetch_bars(c, d0, d1))
         if i % 25 == 0 or i == len(todo):
-            print(f"  [{i}/{len(todo)}] calls={H.calls} elapsed={time.time() - t_start:.0f}s")
+            print(f"  [{i}/{len(todo)}] calls={CALLS} elapsed={time.time() - t_start:.0f}s")
             # checkpoint
             df = pd.concat([prev, pd.DataFrame(all_rows)], ignore_index=True)
             df.to_parquet(OUT_PARQUET, index=False)
@@ -246,7 +222,7 @@ def main():
             ["date", "expiration", "strike", "right", "c", "v", "n"]
         ].to_string(index=False)
     )
-    print(f"\ntotal API calls this run: {H.calls}")
+    print(f"\ntotal API calls this run: {CALLS}")
     print(f"parquet: {OUT_PARQUET}")
 
 
