@@ -756,7 +756,7 @@ def test_databento_get_oi_filters_to_open_interest_stat_type():
     `stat_type == OPEN_INTEREST` (9) rows are real open interest; anything
     else's `quantity` is unrelated (seen in practice as an int32 sentinel,
     2147483647, once misread as an OI value of 2.1 billion contracts)."""
-    from nussif_data.connectors.databento import DatabentoConnector, _STAT_TYPE_OPEN_INTEREST
+    from nussif_data.connectors.databento import _STAT_TYPE_OPEN_INTEREST, DatabentoConnector
 
     class _FakeData:
         def to_df(self):

@@ -82,8 +82,11 @@ def recent_trading_days(n):
     end = date.today()
     start = end - timedelta(days=20)
     path = _CUSTOM_BARS["endpoint"].format(
-        ticker=UNDERLIER, multiplier=_DAILY["multiplier"], timespan=_DAILY["timespan"],
-        start=start, end=end,
+        ticker=UNDERLIER,
+        multiplier=_DAILY["multiplier"],
+        timespan=_DAILY["timespan"],
+        start=start,
+        end=end,
     )
     j = get_json(path, _CUSTOM_BARS.get("params", {}))
     rows = j.get("results") or []
@@ -125,8 +128,11 @@ def list_contracts(first_day, spot):
 def fetch_bars(contract, d0, d1):
     tk = contract["ticker"]
     path = _CUSTOM_BARS["endpoint"].format(
-        ticker=urllib.parse.quote(tk), multiplier=_DAILY["multiplier"], timespan=_DAILY["timespan"],
-        start=d0, end=d1,
+        ticker=urllib.parse.quote(tk),
+        multiplier=_DAILY["multiplier"],
+        timespan=_DAILY["timespan"],
+        start=d0,
+        end=d1,
     )
     j = get_json(path, _CUSTOM_BARS.get("params", {}))
     rows = []

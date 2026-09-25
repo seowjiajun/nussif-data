@@ -80,6 +80,7 @@ def _parse_osi(symbol: str) -> dict | None:
         return None
     return {"root": root, "expiration": expiration, "right": symbol[12], "strike": strike}
 
+
 _UTC = ZoneInfo("UTC")
 
 
@@ -301,7 +302,9 @@ class DatabentoConnector(Connector):
             end=end,
         )
         df = data.to_df()
-        _save_raw("statistics", sym, date, df)  # every stat_type, not just OPEN_INTEREST -- see filter below
+        _save_raw(
+            "statistics", sym, date, df
+        )  # every stat_type, not just OPEN_INTEREST -- see filter below
         # `statistics` carries every stat type (settlement price, highest bid,
         # volatility, ...), not just OI -- on a typical day only ~20% of rows
         # are `stat_type == OPEN_INTEREST`; the rest's `quantity` field is
@@ -379,7 +382,7 @@ class DatabentoConnector(Connector):
 
         parsed = r["symbol"].map(_parse_osi)
         rows = []
-        for sym_str, p, qty in zip(r["symbol"], parsed, r["quantity"], strict=True):
+        for p, qty in zip(parsed, r["quantity"], strict=True):
             if p is None or p["root"] != sym:
                 continue
             rows.append(

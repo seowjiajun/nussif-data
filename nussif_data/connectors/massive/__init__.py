@@ -75,7 +75,7 @@ class MassiveConnector(Connector):
                 needs_key=True,
                 description=(
                     "exchange id -> name/mic/participant_id mapping -- asset_class "
-                    "required (stocks/options/crypto/fx/futures); \"options\" decodes "
+                    'required (stocks/options/crypto/fx/futures); "options" decodes '
                     "option_chain()'s own ask_exchange/bid_exchange codes"
                 ),
             ),
@@ -148,7 +148,9 @@ class MassiveConnector(Connector):
             frames.append(
                 cached(
                     key,
-                    lambda tk=tk: bars.fetch_intraday(self.http, self.cfg, tk, multiplier, timespan),
+                    lambda tk=tk: bars.fetch_intraday(
+                        self.http, self.cfg, tk, multiplier, timespan
+                    ),
                     refresh=refresh,
                 )
             )
