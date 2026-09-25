@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nussif-data"
-version = "0.8.0"
+version = "0.9.0"
 description = "One-line access to CBOE, FRED, Massive, Alpha Vantage and Databento market data"
 requires-python = ">=3.10"
 dependencies = [

@@ -7,6 +7,8 @@
     nussif-data massive SPY QQQ --field close      # WIDE by ticker
     nussif-data option_chain SPY --date 2024-06-03
     nussif-data option_chain QQQ --start 2020-01-01 --end 2026-09-23 --mode download --max-workers 250
+    nussif-data backfill option_chain SPY QQQ --start 2013-04-03 --min-dte 15 --max-dte 60
+    nussif-data backfill open_interest SPY --start 2018 --weekday WED
     nussif-data catalog
     nussif-data connectors
 
@@ -74,6 +76,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     add_option_chain_args(oc)
 
+    bf = sub.add_parser("backfill", help="fill the cache with per-day Databento pulls over a span")
+    bf.add_argument("dataset", choices=["option_chain", "open_interest"])
+    bf.add_argument("symbols", nargs="+", help="underlier ticker(s)")
+    bf.add_argument("--start", required=True, help="first day, e.g. 2013-04-03")
+    bf.add_argument("--end", help="last day (default: today)")
+    bf.add_argument("--weekday", help="only this weekday, e.g. WED (default: every trading day)")
+    bf.add_argument("--moneyness", type=float, help="option_chain band: +-fraction of spot")
+    bf.add_argument("--min-dte", type=int, help="option_chain band: shortest expiry")
+    bf.add_argument("--max-dte", type=int, help="option_chain band: longest expiry")
+    bf.add_argument("--workers", type=int, default=6, help="concurrent pulls (default 6)")
+    bf.add_argument("-o", "--out", help="write the per-pull report (.csv / .parquet)")
+
     sub.add_parser("catalog", help="list fetchable datasets")
     sub.add_parser("connectors", help="list connectors and their datasets")
     return p
@@ -109,6 +123,27 @@ def _run_option_chain(a: argparse.Namespace) -> int:
     return 0
 
 
+def _run_backfill(a: argparse.Namespace) -> int:
+    from . import backfill, trading_days
+    from ._util import write_frame
+
+    band = {
+        k: v
+        for k, v in {"moneyness": a.moneyness, "min_dte": a.min_dte, "max_dte": a.max_dte}.items()
+        if v is not None
+    }
+    days = trading_days(a.start, a.end, weekday=a.weekday)
+    report = backfill(a.dataset, a.symbols, days, workers=a.workers, **band)
+    failed = report[report["status"] != "ok"]
+    print(f"{len(report)} pulls, {len(failed)} failed "
+          f"({days.min().date()}..{days.max().date()}, {len(days)} days)")  # fmt: skip
+    if len(failed):
+        print(failed.head(20).to_string(index=False))
+    if a.out:
+        print(f"wrote {write_frame(report, a.out)}")
+    return 1 if len(failed) == len(report) else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
@@ -127,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.cmd == "option_chain":
         return _run_option_chain(a)
+    if a.cmd == "backfill":
+        return _run_backfill(a)
 
     kw = {"start": a.start, "end": a.end, "refresh": a.refresh, "raw": a.raw}
     if not a.raw:

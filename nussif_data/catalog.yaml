@@ -134,6 +134,7 @@ connectors:
         quote_schema: cbbo-1m
         close_tz: America/New_York
         close_time: "16:00"
+        early_close_time: "13:00"   # NYSE half-days (Jul 3 / day after Thanksgiving / Dec 24)
         history_start: "2013-04-01"
         default_moneyness: 0.25      # keep strikes within +-25% of spot
         default_min_dte: 0           # raise it to skip the daily/weekly expiries

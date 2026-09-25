@@ -530,9 +530,10 @@ def test_databento_filter_moneyness_and_dte():
     assert set(far["strike"]) == {100.0}  # the 2025-06-20 contract
 
 
-def test_databento_get_quotes_chunks_above_symbol_cap():
+def test_databento_get_quotes_chunks_above_symbol_cap(monkeypatch, tmp_path):
     from nussif_data.connectors.databento import DatabentoConnector
 
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))  # _get_quotes saves the raw response
     calls = []
 
     class _FakeData:
@@ -550,8 +551,47 @@ def test_databento_get_quotes_chunks_above_symbol_cap():
     conn = DatabentoConnector.__new__(DatabentoConnector)
     conn._cli = _FakeClient()
     spec = {"close_tz": "America/New_York", "close_time": "16:00", "max_quote_symbols": 2000}
-    conn._get_quotes([f"O{i}" for i in range(4500)], "2024-06-03", spec)
+    conn._get_quotes("SPY", [f"O{i}" for i in range(4500)], "2024-06-03", spec)
     assert calls == [2000, 2000, 500]  # split into <=cap batches
+
+
+def test_databento_early_closes_match_nyse_2013_2025():
+    from nussif_data.connectors.databento import _nyse_early_close
+
+    nyse = {  # NYSE's published 1pm closes
+        "2013-07-03", "2013-11-29", "2013-12-24", "2014-07-03", "2014-11-28", "2014-12-24",
+        "2015-11-27", "2015-12-24", "2016-11-25", "2017-07-03", "2017-11-24", "2018-07-03",
+        "2018-11-23", "2018-12-24", "2019-07-03", "2019-11-29", "2019-12-24", "2020-11-27",
+        "2020-12-24", "2021-11-26", "2022-11-25", "2023-07-03", "2023-11-24", "2024-07-03",
+        "2024-11-29", "2024-12-24", "2025-07-03", "2025-11-28", "2025-12-24",
+    }  # fmt: skip
+    days = pd.bdate_range("2013-01-01", "2025-12-31").strftime("%Y-%m-%d")
+    assert {d for d in days if _nyse_early_close(d)} == nyse
+
+
+def test_databento_quotes_snapshot_at_1pm_on_half_days(monkeypatch, tmp_path):
+    from nussif_data.connectors.databento import DatabentoConnector
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    starts = []
+
+    class _FakeTS:
+        def get_range(self, **kw):
+            starts.append(kw["start"])
+
+            class _D:
+                def to_df(self):
+                    return pd.DataFrame({"instrument_id": [], "bid_px_00": [], "ask_px_00": []})
+
+            return _D()
+
+    conn = DatabentoConnector.__new__(DatabentoConnector)
+    conn._cli = type("C", (), {"timeseries": _FakeTS()})()
+    spec = {"close_tz": "America/New_York", "close_time": "16:00", "max_quote_symbols": 2000}
+    conn._get_quotes("SPY", ["O1"], "2024-11-29", spec)  # day after Thanksgiving
+    conn._get_quotes("SPY", ["O1"], "2024-11-27", spec)  # ordinary day
+    assert starts[0].startswith("2024-11-29T17:57")  # 13:00 EST - 3min = 17:57Z
+    assert starts[1].startswith("2024-11-27T20:57")  # 16:00 EST - 3min = 20:57Z
 
 
 def test_databento_assemble_to_canonical():
@@ -1444,3 +1484,72 @@ def test_repl_option_chain_download_runs_in_background_job(monkeypatch, tmp_path
     assert job.finished_at is not None
     assert job.succeeded == 1
     assert job.failed == []
+
+
+# ---------------------------------------------------------------- backfill
+def _fake_bars(days, symbols=("SPY",)):
+    def bars(*syms, start=None, end=None, field=None, **kw):
+        df = pd.DataFrame({"date": pd.DatetimeIndex(days)})
+        for i, s in enumerate(syms):
+            df[s] = 100.0 + i
+        return df.loc[(df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))]
+
+    return bars
+
+
+def test_trading_days_from_reference_bars_and_weekday(monkeypatch):
+    days = pd.to_datetime(["2024-07-01", "2024-07-02", "2024-07-03", "2024-07-05", "2024-07-10"])
+    monkeypatch.setattr(nd.massive, "bars", _fake_bars(days))
+    got = nd.trading_days("2024-07-01", "2024-07-31")
+    assert list(got) == list(days)  # July 4th absent: the calendar is the market's own
+    wed = nd.trading_days("2024-07-01", "2024-07-31", weekday="wed")
+    assert list(wed.strftime("%Y-%m-%d")) == ["2024-07-03", "2024-07-10"]
+    with pytest.raises(ValueError, match="weekday"):
+        nd.trading_days("2024-07-01", "2024-07-31", weekday="SAT")
+
+
+def test_backfill_pulls_every_symbol_day_with_spot_and_band(monkeypatch):
+    days = pd.to_datetime(["2024-07-01", "2024-07-02"])
+    monkeypatch.setattr(nd.massive, "bars", _fake_bars(days))
+    calls = []
+
+    def chain(sym, *, date, spot=None, **band):
+        calls.append((sym, date, spot, band))
+        if (sym, date) == ("QQQ", "2024-07-02"):
+            raise RuntimeError("no contracts in band")
+        return pd.DataFrame({"x": [1, 2, 3]})
+
+    monkeypatch.setattr(nd.databento, "option_chain", chain)
+    report = nd.backfill(
+        "option_chain", ["spy", "qqq"], days, moneyness=0.25, min_dte=15, progress=False
+    )
+    assert len(calls) == 4
+    assert {c[2] for c in calls if c[0] == "SPY"} == {100.0}  # spot = that symbol's close
+    assert all(c[3] == {"moneyness": 0.25, "min_dte": 15} for c in calls)
+    failed = report[report["status"] != "ok"]
+    assert list(zip(failed["symbol"], failed["date"].dt.strftime("%Y-%m-%d"), strict=True)) == [
+        ("QQQ", "2024-07-02")
+    ]
+    assert report.loc[report["status"] == "ok", "rows"].eq(3).all()
+
+
+def test_backfill_rejects_band_for_open_interest_and_unknown_dataset():
+    with pytest.raises(ValueError, match="no band"):
+        nd.backfill("open_interest", "SPY", ["2024-07-01"], min_dte=15)
+    with pytest.raises(ValueError, match="dataset"):
+        nd.backfill("bars", "SPY", ["2024-07-01"])
+
+
+def test_cli_backfill(monkeypatch, capsys):
+    from nussif_data.cli import main
+
+    days = pd.to_datetime(["2024-07-01", "2024-07-02"])
+    monkeypatch.setattr(nd.massive, "bars", _fake_bars(days))
+    monkeypatch.setattr(
+        nd.databento, "open_interest", lambda sym, *, date: pd.DataFrame({"x": [1]})
+    )
+    assert (
+        main(["backfill", "open_interest", "SPY", "--start", "2024-07-01", "--end", "2024-07-31"])
+        == 0
+    )
+    assert "2 pulls, 0 failed" in capsys.readouterr().out

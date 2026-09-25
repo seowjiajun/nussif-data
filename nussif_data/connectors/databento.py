@@ -90,6 +90,17 @@ def _close_utc(date_str: str, tz: str, hhmm: str) -> datetime:
     return local.astimezone(_UTC)
 
 
+def _nyse_early_close(date_str: str) -> bool:
+    """NYSE's scheduled 1pm closes: July 3 and December 24 when they fall
+    Monday-Thursday (on a Friday the holiday is observed that day and the
+    market is shut), and the day after Thanksgiving (4th Thursday of November).
+    Matches every early close 2013 onward, the span OPRA.PILLAR covers."""
+    d = pd.Timestamp(date_str)
+    if (d.month, d.day) in ((7, 3), (12, 24)):
+        return d.dayofweek <= 3
+    return d.month == 11 and d.dayofweek == 4 and 22 <= d.day - 1 <= 28
+
+
 def _guess_spot(defn: pd.DataFrame) -> float:
     """Rough spot for the moneyness filter: median strike of the nearest expiry
     (ATM strikes are the densest, so this lands close enough for a wide band)."""
@@ -252,9 +263,12 @@ class DatabentoConnector(Connector):
         return df[["raw_symbol", "instrument_id", "strike_price", "expiration", "instrument_class"]]
 
     def _get_quotes(self, sym: str, raw_symbols: list[str], date: str, spec: dict) -> pd.DataFrame:
-        c = _close_utc(
-            date, spec.get("close_tz", "America/New_York"), spec.get("close_time", "16:00")
-        )
+        close = (
+            spec.get("early_close_time", "13:00")
+            if _nyse_early_close(date)
+            else spec.get("close_time", "16:00")
+        )  # a 16:00 snapshot on a half-day finds no quotes -- the market shut at 13:00
+        c = _close_utc(date, spec.get("close_tz", "America/New_York"), close)
         start = (c - timedelta(minutes=3)).isoformat()
         end = (c + timedelta(minutes=1)).isoformat()
         cap = int(spec.get("max_quote_symbols", 2000))  # databento get_range hard limit

@@ -14,6 +14,9 @@ vendor's primary dataset.
 
     nd.catalog()      nd.connectors()     nd.clear_cache("cboe")
 
+    days = nd.trading_days("2013-04-03", "2026-09-03")         # fill the cache over a span
+    nd.backfill("option_chain", "SPY", days, moneyness=0.25, min_dte=15, max_dte=60)
+
 Keys (Massive / Alpha Vantage / Databento): set $MASSIVE_API_KEY etc. in the
 environment, or add a line to ~/.config/nussif-data/keys.env (chmod 600). There
 is no Python setter -- a key must never be a literal that could be committed.
@@ -50,7 +53,7 @@ from .core.errors import (
     UpstreamError,
 )
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 __all__ = [
     "REGISTRY",
     "AuthError",
@@ -62,6 +65,7 @@ __all__ = [
     "UpstreamError",
     "__version__",
     "alphavantage",
+    "backfill",
     "cache_dir",
     "catalog",
     "cboe",
@@ -71,6 +75,7 @@ __all__ = [
     "fred",
     "get_key",
     "massive",
+    "trading_days",
 ]
 
 _cfg = _catalog.connectors()
@@ -91,6 +96,8 @@ REGISTRY = ConnectorRegistry()
 # bookkeeping (nd.catalog(), REGISTRY.for_dataset()).
 for _c in (cboe, fred, alphavantage, databento, massive):
     REGISTRY.register(_c)
+
+from ._backfill import backfill, trading_days  # noqa: E402 -- uses the vendor instances above
 
 
 def catalog() -> dict:

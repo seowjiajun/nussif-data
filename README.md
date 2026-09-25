@@ -32,8 +32,16 @@ nussif-data massive SPY QQQ TLT --start 2020 --field close -o closes.parquet
 nussif-data massive SPY --raw --head 5
 nussif-data option_chain SPY --date 2024-06-03
 nussif-data option_chain QQQ --start 2020-01-01 --end 2026-09-23 --mode download --max-workers 250
+nussif-data backfill option_chain SPY QQQ --start 2013-04-03 --moneyness 0.25 --min-dte 15 --max-dte 60
+nussif-data backfill open_interest SPY --start 2018-01-01 --weekday WED
 nussif-data catalog
 ```
+
+`backfill` fills the cache with one Databento pull per `(symbol, trading day)`
+over a span (`nd.backfill(dataset, symbols, nd.trading_days(start, end))` in
+Python). Already-cached pulls return instantly, so re-running resumes; failures
+are reported per pull, not raised. The option-chain cache is keyed by the band,
+so pass the same `--moneyness/--min-dte/--max-dte` the readers use.
 
 ### Interactive shell
 `nussif-data` with **no arguments** drops into a persistent shell instead of the one-shot
@@ -145,7 +153,7 @@ except nd.UpstreamError:  ...   # 5xx / network / bad response
 | `exchanges` | `nd.massive.exchanges(asset_class)` | exchange id → name/mic/participant_id mapping — decodes `option_chain()`'s own `ask_exchange`/`bid_exchange` codes. One global reference table (not per-symbol), cached. `asset_class` is required (`stocks`/`options`/`crypto`/`fx`/`futures`, each a disjoint id space, no default); `"options"` is the id space (300-325) that matches `option_chain()`'s own codes. |
 | `trades` | `nd.massive.trades(*tickers, date=)` | tick-level trade prints for one or more **option contract** tickers (e.g. `O:SPY240621C00540000` — use `option_chain()`'s own `ticker` column, not the underlier symbol) on one day. One row per print, every vendor field kept (price/size/exchange/conditions/sequence_number/timestamps) plus a derived tz-aware `timestamp`. Paginated (up to 50k/page). Needs `MASSIVE_API_KEY`. |
 | `option_chain` | `nd.alphavantage.option_chain(*symbols, date=)` | full EOD chain per `(symbol, date)` in **one** request — bid/ask/sizes, IV, greeks, OI. `date` back to 2008; omit for latest. OPRA-sourced quotes; IV/greeks are Alpha Vantage's own (recompute for the deep wings). **`HISTORICAL_OPTIONS` is a PREMIUM endpoint** — free keys raise `NotEntitled`. Premium ~$50/mo (75 req/min) → full backfill in minutes, then downgrade. Needs `ALPHAVANTAGE_API_KEY`. |
-| `option_chain` | `nd.databento.option_chain(*symbols, date=, spot=, moneyness=, min_dte=, max_dte=)` | historical OPRA EOD chain per `(symbol, date)` back to 2013-04, pay-as-you-go (~cents/name/date). Two-stage: `definition` → filter to a moneyness / DTE band → `cbbo-1m` closing NBBO. Returns bid/ask/sizes only — **no IV/greeks/OI** (use `desk.estimators.black_scholes`; OI is a separate `statistics` pull). Pass `spot` for an accurate strike filter and `min_dte` (e.g. 15) to skip daily/weekly expiries — SPY/QQQ otherwise exceed Databento's 2,000-symbol quote cap (handled by chunking, but you pay for the extra strikes). `pip install "nussif-data[databento]"`, needs `DATABENTO_API_KEY`. |
+| `option_chain` | `nd.databento.option_chain(*symbols, date=, spot=, moneyness=, min_dte=, max_dte=)` | historical OPRA EOD chain per `(symbol, date)` back to 2013-04, pay-as-you-go (~cents/name/date). Two-stage: `definition` → filter to a moneyness / DTE band → `cbbo-1m` closing NBBO. Returns bid/ask/sizes only — **no IV/greeks/OI** (use `desk.estimators.black_scholes`; OI is a separate `statistics` pull). The closing snapshot is 16:00 ET, 13:00 on NYSE half-days (Jul 3 / day after Thanksgiving / Dec 24). Pass `spot` for an accurate strike filter and `min_dte` (e.g. 15) to skip daily/weekly expiries — SPY/QQQ otherwise exceed Databento's 2,000-symbol quote cap (handled by chunking, but you pay for the extra strikes). `pip install "nussif-data[databento]"`, needs `DATABENTO_API_KEY`. |
 
 **Finding a symbol:**
 - **FRED** — search [fred.stlouisfed.org/search](https://fred.stlouisfed.org/search) by name; the id is in the result and in the series page URL (e.g. `.../series/BAA10Y` → `BAA10Y`).
