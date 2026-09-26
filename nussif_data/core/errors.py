@@ -19,6 +19,11 @@ class RateLimited(NussifDataError):
     """HTTP 429 and retries exhausted."""
 
 
+class OutsideHistory(NussifDataError):
+    """The request falls before the dataset's first available date
+    (`history_start` in the catalog) -- no data exists, so nothing is fetched."""
+
+
 class UpstreamError(NussifDataError):
     """5xx, network failure, or an unparseable/empty response from the vendor."""
 

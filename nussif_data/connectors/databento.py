@@ -40,7 +40,7 @@ import pandas as pd
 from .._config import get_key
 from ..cache import cache_dir, cached
 from ..core import Connector, Dataset
-from ..core.errors import UpstreamError
+from ..core.errors import OutsideHistory, UpstreamError
 from ..core.schema import OPEN_INTEREST, OPTION_CHAIN
 
 _STAT_TYPE_OPEN_INTEREST = 9  # databento_dbn.StatType.OPEN_INTEREST
@@ -185,6 +185,7 @@ class DatabentoConnector(Connector):
             raise ValueError("nd.databento.option_chain(...) needs at least one symbol")
         date_str = pd.Timestamp(date).strftime("%Y-%m-%d")  # a bare `str(pd.Timestamp(...))`
         # includes " 00:00:00" -- Databento's `start`/`end` reject that, only clean ISO dates
+        self._check_history(date_str, spec)
 
         frames = [
             cached(
@@ -219,6 +220,8 @@ class DatabentoConnector(Connector):
             raise ValueError("nd.databento.open_interest(...) needs at least one symbol")
         date_str = pd.Timestamp(date).strftime("%Y-%m-%d")  # a bare `str(pd.Timestamp(...))`
         # includes " 00:00:00" -- Databento's `start`/`end` reject that, only clean ISO dates
+        # same OPRA.PILLAR feed as option_chain, so the same history
+        self._check_history(date_str, self.cfg.get("datasets", {}).get("option_chain", {}))
 
         frames = [
             cached(
@@ -230,6 +233,18 @@ class DatabentoConnector(Connector):
         ]
         out = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
         return OPEN_INTEREST.validate(out, where="databento.open_interest")
+
+    @staticmethod
+    def _check_history(date_str: str, spec: dict) -> None:
+        """Fail fast, before any cache lookup or network call, for a date the
+        dataset can't have: a request before `history_start` would otherwise
+        go to the vendor every time (a failed fetch isn't cached) and cost a
+        paid round-trip to learn nothing."""
+        start = spec.get("history_start")
+        if start and pd.Timestamp(date_str) < pd.Timestamp(start):
+            raise OutsideHistory(
+                f"databento: {date_str} is before {start}, the start of the dataset's history"
+            )
 
     # -- stages --
     def _one(self, sym: str, date: str, spot, mny: float, ndte: int, mdte: int) -> pd.DataFrame:

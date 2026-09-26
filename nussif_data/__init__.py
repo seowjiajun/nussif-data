@@ -48,18 +48,20 @@ from .core.errors import (
     DatasetNotFound,
     NotEntitled,
     NussifDataError,
+    OutsideHistory,
     RateLimited,
     SchemaError,
     UpstreamError,
 )
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 __all__ = [
     "REGISTRY",
     "AuthError",
     "DatasetNotFound",
     "NotEntitled",
     "NussifDataError",
+    "OutsideHistory",
     "RateLimited",
     "SchemaError",
     "UpstreamError",

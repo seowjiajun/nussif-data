@@ -1553,3 +1553,22 @@ def test_cli_backfill(monkeypatch, capsys):
         == 0
     )
     assert "2 pulls, 0 failed" in capsys.readouterr().out
+
+
+def test_databento_refuses_dates_before_history_start_without_a_fetch(monkeypatch, tmp_path):
+    # a date before OPRA.PILLAR's history can't have data; asking the vendor anyway was
+    # a paid round-trip per call, repeated forever (failed fetches aren't cached)
+    import nussif_data as nd
+    from nussif_data.connectors.databento import DatabentoConnector
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+
+    def no_network(*a, **k):
+        raise AssertionError("fetched a date outside the dataset's history")
+
+    monkeypatch.setattr(DatabentoConnector, "_client", no_network)
+    with pytest.raises(nd.OutsideHistory, match="before 2013-04-01"):
+        nd.databento.option_chain("SPY", date="2012-12-31")
+    with pytest.raises(nd.OutsideHistory):
+        nd.databento.open_interest("SPY", date="2010-06-01")
+    assert isinstance(nd.OutsideHistory("x"), nd.NussifDataError)
