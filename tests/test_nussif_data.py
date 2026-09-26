@@ -1616,3 +1616,52 @@ def test_databento_cache_only_never_fetches(monkeypatch, tmp_path):
     )
     assert len(got) == 1
     assert isinstance(nd.NotCached("x"), nd.NussifDataError)
+
+
+def test_massive_option_chain_refuses_dates_before_its_quotes_without_a_call(monkeypatch, tmp_path):
+    # Massive lists option contracts back to 2014 but has quotes only from
+    # 2022-03-07; an earlier request used to pay for a listing, then fail
+    import nussif_data as nd
+    from nussif_data.connectors.massive.options import OptionChainFetcher
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+
+    def no_network(*a, **k):
+        raise AssertionError("called the vendor for a date before the quotes start")
+
+    monkeypatch.setattr(OptionChainFetcher, "_trading_days", no_network)
+    monkeypatch.setattr(OptionChainFetcher, "_spot_on", no_network)
+    monkeypatch.setattr(OptionChainFetcher, "_get_contracts", no_network)
+    with pytest.raises(nd.OutsideHistory, match="2022-03-07"):
+        nd.massive.option_chain("QQQ", date="2021-06-09")
+    with pytest.raises(nd.OutsideHistory):
+        nd.massive.option_chain("QQQ", start="2021-01-04", end="2023-01-03")
+
+
+def test_massive_option_chain_cache_only(monkeypatch, tmp_path):
+    import nussif_data as nd
+    from nussif_data.cache import cached
+    from nussif_data.connectors.massive.options import OptionChainFetcher
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+
+    def no_network(*a, **k):
+        raise AssertionError("fetched with cache_only=True")
+
+    monkeypatch.setattr(OptionChainFetcher, "_one_chain", no_network)
+    req = nd.massive.option_chain("QQQ", date="2024-06-12", spot=450.0)
+    with pytest.raises(nd.NotCached, match="QQQ/2024-06-12"):
+        req.fetch(cache_only=True)
+    frame = pd.DataFrame(
+        {
+            "symbol": ["QQQ"],
+            "date": [pd.Timestamp("2024-06-12")],
+            "expiration": [pd.Timestamp("2024-07-19")],
+            "strike": [440.0],
+            "right": ["P"],
+            "bid": [3.0],
+            "ask": [3.1],
+        }
+    )
+    cached(req._cache_key("QQQ", "2024-06-12"), lambda: frame)
+    assert len(req.fetch(cache_only=True)) == 1

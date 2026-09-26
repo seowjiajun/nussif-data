@@ -88,10 +88,12 @@ connectors:
         default_moneyness: 0.25       # keep strikes within +-25% of spot
         default_min_dte: 15           # raise it to skip the daily/weekly expiries
         default_max_dte: 60
-        history_start: "2014-01-01"   # Massive's real SPY options coverage -- see
-        # notebooks/data_exploration/massive.ipynb's year-sampling cell; earlier
-        # as_of dates returned 0 contracts in real testing, not confirmed against
-        # Massive's own docs as *the* official start, just the empirically observed one
+        history_start: "2022-03-07"   # the first day Massive has option QUOTES (probed
+        # 2026-09-26 on SPY, QQQ and IWM: 2022-03-04 and every earlier date sampled back
+        # to 2014 return contracts but no quotes; 2022-03-07 onward returns both). The
+        # contracts reference data goes back to 2014 -- the old 2014-01-01 here was the
+        # contracts' start, which made every 2014-2022 chain request pay for a listing
+        # and then fail with "no EOD quotes found".
         max_workers: 80                # per-contract EOD quote fetch concurrency (Massive's
         # /v3/quotes endpoint takes one ticker per call, unlike Databento's batched
         # cbbo-1m -- see connectors/massive/options.py's option_chain() docstring). 80 is

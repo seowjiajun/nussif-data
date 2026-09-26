@@ -104,6 +104,18 @@ def cached(
     return df
 
 
+def require_cached(keys, refresh: bool = False) -> None:
+    """For `cache_only` requests: raise `NotCached` unless every key is on disk
+    (and no `refresh` was asked for, which would fetch)."""
+    from .core.errors import NotCached
+
+    if refresh:
+        raise ValueError("cache_only=True and refresh=True contradict each other")
+    missing = [k for k in keys if not is_cached(k)]
+    if missing:
+        raise NotCached(f"not in the local cache (cache_only=True): {', '.join(missing)}")
+
+
 def is_cached(key: str) -> bool:
     """Whether `key` already has a cached result on disk -- lets a caller skip
     work for free (no build_fn call) instead of paying for a fetch just to

@@ -38,9 +38,9 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from .._config import get_key
-from ..cache import cache_dir, cached, is_cached
+from ..cache import cache_dir, cached, require_cached
 from ..core import Connector, Dataset
-from ..core.errors import NotCached, OutsideHistory, UpstreamError
+from ..core.errors import OutsideHistory, UpstreamError
 from ..core.schema import OPEN_INTEREST, OPTION_CHAIN
 
 _STAT_TYPE_OPEN_INTEREST = 9  # databento_dbn.StatType.OPEN_INTEREST
@@ -107,16 +107,6 @@ def _guess_spot(defn: pd.DataFrame) -> float:
     (ATM strikes are the densest, so this lands close enough for a wide band)."""
     nx = defn.loc[defn["expiration"] == defn["expiration"].min(), "strike"]
     return float(nx.median() if len(nx) else defn["strike"].median())
-
-
-def _require_cached(keys, refresh: bool) -> None:
-    """For `cache_only` requests: raise `NotCached` unless every key is on disk
-    (and no `refresh` was asked for, which would fetch)."""
-    if refresh:
-        raise ValueError("cache_only=True and refresh=True contradict each other")
-    missing = [k for k in keys if not is_cached(k)]
-    if missing:
-        raise NotCached(f"not in the local cache (cache_only=True): {', '.join(missing)}")
 
 
 class DatabentoConnector(Connector):
@@ -202,7 +192,7 @@ class DatabentoConnector(Connector):
 
         keys = {s: f"databento/option_chain/{s}/{date_str}/m{mny}_d{ndte}-{mdte}" for s in syms}
         if cache_only:
-            _require_cached(keys.values(), refresh)
+            require_cached(keys.values(), refresh)
         frames = [
             cached(
                 keys[s],
@@ -242,7 +232,7 @@ class DatabentoConnector(Connector):
 
         keys = {s: f"databento/open_interest/{s}/{date_str}" for s in syms}
         if cache_only:
-            _require_cached(keys.values(), refresh)
+            require_cached(keys.values(), refresh)
         frames = [
             cached(keys[s], lambda s=s: self._one_oi(s, date_str), refresh=refresh) for s in syms
         ]

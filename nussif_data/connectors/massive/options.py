@@ -21,8 +21,8 @@ import pandas as pd
 
 from ... import _util
 from ..._config import get_key
-from ...cache import cache_dir, cached, is_cached
-from ...core.errors import RateLimited, UpstreamError
+from ...cache import cache_dir, cached, is_cached, require_cached
+from ...core.errors import OutsideHistory, RateLimited, UpstreamError
 from ...core.schema import OPTION_CHAIN
 from . import bars
 
@@ -131,7 +131,9 @@ class OptionChainRequest:
             "nd_fetched_at_utc": pd.Timestamp.now(tz="UTC").isoformat(),
         }
 
-    def fetch(self, *, refresh: bool = False, out=None) -> pd.DataFrame | dict:
+    def fetch(
+        self, *, refresh: bool = False, out=None, cache_only: bool = False
+    ) -> pd.DataFrame | dict:
         """One EOD chain per (symbol, day), fetched and cached per (symbol,
         day) -- so re-running an overlapping request only pulls the new days.
 
@@ -151,7 +153,14 @@ class OptionChainRequest:
         `out` -- write the result to `.parquet`/`.csv`/`.json`/`.feather`/`.xlsx`
         (format from the extension, same nd._util.write_frame every other
         accessor's `out=` uses) and still return it. Not supported with
-        raw=True -- that returns a dict of per-symbol frames, not one table."""
+        raw=True -- that returns a dict of per-symbol frames, not one table.
+
+        `cache_only` -- raise `NotCached` instead of fetching any (symbol, day)
+        that isn't cached (research that must not call the vendor)."""
+        if cache_only:
+            require_cached(
+                (self._cache_key(s, d) for d in self.date_strs for s in self.syms), refresh
+            )
         if self.raw and out:
             raise ValueError("out= is not supported with raw=True (per-symbol payloads differ)")
 
@@ -437,6 +446,14 @@ class OptionChainFetcher:
         if not syms:
             raise ValueError("nd.massive.option_chain(...) needs at least one symbol")
 
+        requested = pd.Timestamp(date if date is not None else start).strftime("%Y-%m-%d")
+        first = spec.get("history_start")
+        if first and requested < first:
+            # before any network call: every earlier date lists contracts but has no quotes
+            raise OutsideHistory(
+                f"massive.option_chain: {requested} is before {first}, the first day "
+                "Massive has option quotes"
+            )
         if date is not None:
             date_strs = [pd.Timestamp(date).strftime("%Y-%m-%d")]
         else:
