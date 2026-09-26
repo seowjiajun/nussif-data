@@ -88,6 +88,8 @@ connectors:
         default_moneyness: 0.25       # keep strikes within +-25% of spot
         default_min_dte: 15           # raise it to skip the daily/weekly expiries
         default_max_dte: 60
+        strike_grid: 0.5              # standard listed strikes; off-grid ones are adjusted
+        # contracts (past corporate actions) with a non-standard deliverable -- dropped
         history_start: "2022-03-07"   # the first day Massive has option QUOTES (probed
         # 2026-09-26 on SPY, QQQ and IWM: 2022-03-04 and every earlier date sampled back
         # to 2014 return contracts but no quotes; 2022-03-07 onward returns both). The

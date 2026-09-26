@@ -854,19 +854,50 @@ def test_massive_get_contracts_moneyness_none_drops_filter(monkeypatch):
     }
     conn.http = type("H", (), {})()
 
-    seen = {}
+    seen = []
 
     def _fake_get_json(path, params=None):
-        seen["path"] = path
-        seen["params"] = params
-        return {"results": [{"ticker": "O:SPY240621C00540000"}], "next_url": None}
+        seen.append(params)
+        return {
+            "results": [{"ticker": "O:SPY240621C00540000", "strike_price": 540.0}],
+            "next_url": None,
+        }
 
     conn.http.get_json = _fake_get_json
     df = conn._get_contracts("SPY", "2024-06-03", 527.0, None, None, None)
-    assert len(df) == 1
-    assert "strike_price.gte" not in seen["params"]
-    assert "expiration_date.gte" not in seen["params"]
-    assert "expired" not in seen["params"]  # deliberately omitted -- see _get_contracts docstring
+    assert len(df) == 1  # the same contract from both listings, once
+    assert all("strike_price.gte" not in p and "expiration_date.gte" not in p for p in seen)
+    assert all("as_of" not in p for p in seen)  # as_of snapshots are incomplete
+    assert sorted(p["expired"] for p in seen) == ["false", "true"]
+
+
+def test_massive_get_contracts_merges_listings_and_drops_adjusted_strikes(monkeypatch):
+    # QQQ 2023-12-11: the as_of snapshot listed strikes only to 389 for the
+    # 2024-01-19 monthly; listing the expiry directly returns them all, plus
+    # adjusted contracts (x.78 strikes) that must not be traded as standard ones
+    from nussif_data.connectors.massive.options import OptionChainFetcher
+
+    conn = OptionChainFetcher.__new__(OptionChainFetcher)
+    conn.cfg = {
+        "endpoints": {"option_contracts": {"endpoint": "/v3/reference/options/contracts"}},
+        "composites": {"option_chain": {"strike_grid": 0.5}},
+    }
+    conn.http = type("H", (), {})()
+    pages = {
+        "true": [
+            {"ticker": "O:QQQ240119C00389000", "strike_price": 389.0},
+            {"ticker": "O:QQQ240119C00420000", "strike_price": 420.0},
+            {"ticker": "O:QQQ240119C00329780", "strike_price": 329.78},
+            {"ticker": "O:QQQ240119C00402500", "strike_price": 402.5},
+        ],
+        "false": [{"ticker": "O:QQQ240119C00389000", "strike_price": 389.0}],
+    }
+    conn.http.get_json = lambda path, params=None: {
+        "results": pages[params["expired"]],
+        "next_url": None,
+    }
+    df = conn._get_contracts("QQQ", "2023-12-11", 395.0, 0.25, 15, 60)
+    assert sorted(df["strike_price"]) == [389.0, 402.5, 420.0]
 
 
 def test_massive_get_contracts_default_band_filters(monkeypatch):
@@ -1211,7 +1242,11 @@ def test_massive_option_chain_estimate_skips_cached_day(monkeypatch, tmp_path):
 def test_massive_option_chain_estimate_projects_from_contract_count(monkeypatch, tmp_path):
     monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
     monkeypatch.setattr(nd.massive.option_chain, "_spot_on", lambda sym, date_str: 500.0)
-    contracts_canned = {"results": [{"ticker": f"O:SPY{i}"} for i in range(200)], "next_url": None}
+    # the same page for expired=true and =false: dedupe by ticker keeps 200
+    contracts_canned = {
+        "results": [{"ticker": f"O:SPY{i}", "strike_price": 400.0 + i} for i in range(200)],
+        "next_url": None,
+    }
     monkeypatch.setattr(nd.massive.http, "get_json", lambda *a, **k: contracts_canned)
 
     req = nd.massive.option_chain("SPY", date="2024-06-03", max_workers=80)
@@ -1665,3 +1700,46 @@ def test_massive_option_chain_cache_only(monkeypatch, tmp_path):
     )
     cached(req._cache_key("QQQ", "2024-06-12"), lambda: frame)
     assert len(req.fetch(cache_only=True)) == 1
+
+
+def test_massive_quote_errors_never_carry_the_api_key(monkeypatch):
+    pytest.importorskip("requests")
+    import requests
+
+    from nussif_data.connectors.massive import options as mo
+
+    monkeypatch.setattr(mo.time, "sleep", lambda s: None)
+    conn = mo.OptionChainFetcher.__new__(mo.OptionChainFetcher)
+    url = "https://api.massive.com/v3/quotes/O:QQQ231013P00345000?limit=1&apiKey=SECRET123"
+
+    class Session:
+        def get(self, *a, **k):
+            raise requests.exceptions.ConnectionError(f"Max retries exceeded with url: {url}")
+
+    conn._session = Session()
+    conn._requests = requests
+    with pytest.raises(nd.UpstreamError) as e:
+        conn._pooled_get(
+            "https://api.massive.com/v3/quotes/x", {"apiKey": "SECRET123"}, max_retries=2
+        )
+    assert "SECRET123" not in str(e.value) and "***" in str(e.value)
+    assert e.value.__cause__ is None  # the original (keyed) message isn't chained either
+
+
+def test_massive_quote_get_retries_transient_server_errors(monkeypatch):
+    from nussif_data.connectors.massive import options as mo
+
+    monkeypatch.setattr(mo.time, "sleep", lambda s: None)
+    conn = mo.OptionChainFetcher.__new__(mo.OptionChainFetcher)
+    statuses = iter([502, 503, 200])
+
+    class Response:
+        def __init__(self, status):
+            self.status_code, self.headers = status, {}
+
+    class Session:
+        def get(self, *a, **k):
+            return Response(next(statuses))
+
+    conn._session = Session()
+    assert conn._pooled_get("u", {}, max_retries=5).status_code == 200

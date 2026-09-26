@@ -23,10 +23,12 @@ from ... import _util
 from ..._config import get_key
 from ...cache import cache_dir, cached, is_cached, require_cached
 from ...core.errors import OutsideHistory, RateLimited, UpstreamError
+from ...core.http import _redact
 from ...core.schema import OPTION_CHAIN
 from . import bars
 
 log = logging.getLogger("nussif_data.massive")
+_RETRY_STATUS = frozenset({429, 500, 502, 503, 504})  # rate limit, transient server errors
 
 _UNSET = object()  # option_chain()'s moneyness/min_dte/max_dte: distinguishes "use the
 # catalog default" (argument omitted) from an explicit `None` ("drop this filter
@@ -521,23 +523,30 @@ class OptionChainFetcher:
         return float(bar["c"])
 
     def _get_contracts(self, sym: str, date_str: str, spot: float, mny, ndte, mdte) -> pd.DataFrame:
-        """That date's contract band -- Endpoint 5 (contract reference),
-        as_of + strike/DTE filters, paginated through the shared HttpClient
-        (sequential -- this is a handful of requests, not the per-contract
-        quote stage that needs concurrency).
+        """That date's contract band -- Endpoint 5 (contract reference), every
+        contract whose expiry falls in the DTE window and whose strike is in
+        the moneyness band, paginated through the shared HttpClient
+        (sequential -- a handful of requests, not the per-contract quote stage
+        that needs concurrency).
 
-        `expired` is deliberately omitted (falls back to its documented
-        default, false) -- expired=true alongside as_of=<past date> returned
-        0 contracts on every day in real testing. Leading hypothesis, NOT
-        confirmed in Massive's docs (which don't state how expired/as_of
-        interact): expired=true may be evaluated relative to as_of rather
-        than today, directly contradicting expiration_date.gte/lte asking for
-        expirations after that same date. Whatever the exact mechanism,
-        expired=false ("not yet expired as of as_of") is the documented-
-        default semantics actually wanted here."""
+        Listed by expiry window, NOT by `as_of`: Massive's `as_of` snapshot is
+        incomplete -- QQQ on 2023-12-11 listed 70 contracts for the
+        2024-01-19 monthly (strikes up to 389, spot 395), where listing that
+        expiry directly returns every strike to 490. So both `expired=true`
+        (expiries before today) and `expired=false` are listed and merged;
+        a contract that wasn't trading yet on `date_str` simply has no quote
+        that day, and the quote stage drops it. (`expired=true` together with
+        `as_of` returns nothing, whatever the reason.)
+
+        Only strikes on the catalog's `strike_grid` (default $0.50) are kept:
+        the full listing also returns adjusted contracts from past corporate
+        actions (e.g. QQQ strikes at x.78), whose deliverable isn't 100 plain
+        shares -- `shares_per_contract` doesn't flag them, their strikes do."""
         day = pd.Timestamp(date_str)
+        spec = self.cfg["composites"]["option_chain"]
+        grid = float(spec.get("strike_grid", 0.5))
         contracts_path = self.cfg["endpoints"]["option_contracts"]["endpoint"]
-        params = {"underlying_ticker": sym, "as_of": date_str, "limit": 1000}
+        params = {"underlying_ticker": sym, "limit": 1000}
         if mny is not None:
             params["strike_price.gte"] = spot * (1 - mny)
             params["strike_price.lte"] = spot * (1 + mny)
@@ -547,14 +556,21 @@ class OptionChainFetcher:
             params["expiration_date.lte"] = (day + pd.Timedelta(days=mdte)).strftime("%Y-%m-%d")
 
         rows: list[dict] = []
-        next_url = None
-        while True:
-            j = self.http.get_json(next_url or contracts_path, {} if next_url else params)
-            rows.extend(j.get("results") or [])
-            next_url = j.get("next_url")
-            if not next_url:
-                break
+        for expired in ("true", "false"):
+            next_url = None
+            while True:
+                j = self.http.get_json(
+                    next_url or contracts_path, {} if next_url else params | {"expired": expired}
+                )
+                rows.extend(j.get("results") or [])
+                next_url = j.get("next_url")
+                if not next_url:
+                    break
         df = pd.DataFrame(rows)
+        if not df.empty:
+            df = df.drop_duplicates("ticker")
+            steps = df["strike_price"] / grid
+            df = df[(steps - steps.round()).abs() < 1e-6].reset_index(drop=True)
         _save_raw("contracts", sym, date_str, df)
         return df
 
@@ -600,19 +616,20 @@ class OptionChainFetcher:
                 log.debug("massive quote GET transport error (attempt %d): %s", attempt + 1, e)
                 time.sleep(2.0 * (attempt + 1))
                 continue
-            if r.status_code != 429:
+            if r.status_code not in _RETRY_STATUS:
                 return r
             ra = r.headers.get("Retry-After")
             wait = float(ra) if ra and ra.isdigit() else 2.0 * (attempt + 1)
-            log.debug("massive quote GET 429 (attempt %d), waiting %.1fs", attempt + 1, wait)
+            log.debug(
+                "massive quote GET %d (attempt %d), waiting %.1fs", r.status_code, attempt + 1, wait
+            )
             time.sleep(wait)
         if r is not None:
-            return (
-                r  # exhausted retries on 429s -- caller sees the real status via raise_for_status()
-            )
+            return r  # exhausted retries on 429 / 5xx -- the caller raises on the real status
+        # requests' messages carry the full URL, apiKey included -- never let it through
         raise UpstreamError(
-            f"massive: transport error after {max_retries} tries: {last_exc}"
-        ) from last_exc
+            f"massive: transport error after {max_retries} tries: {_redact(str(last_exc))}"
+        ) from None
 
     def _get_quotes_concurrent(
         self, tickers: list[str], date_str: str, api_key: str, max_workers: int
@@ -650,7 +667,12 @@ class OptionChainFetcher:
             r = self._pooled_get(url, params)
             if r.status_code == 429:
                 raise RateLimited(f"massive: 429 fetching quotes for {ticker} after retries")
-            r.raise_for_status()
+            if r.status_code >= 400:
+                # not raise_for_status(): its message carries the URL, apiKey included
+                raise UpstreamError(
+                    f"massive: HTTP {r.status_code} fetching the quote for {ticker} on "
+                    f"{day:%Y-%m-%d}"
+                )
             results = r.json().get("results") or []
             if results:
                 row = dict(results[0])
