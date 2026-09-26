@@ -1572,3 +1572,47 @@ def test_databento_refuses_dates_before_history_start_without_a_fetch(monkeypatc
     with pytest.raises(nd.OutsideHistory):
         nd.databento.open_interest("SPY", date="2010-06-01")
     assert isinstance(nd.OutsideHistory("x"), nd.NussifDataError)
+
+
+def test_databento_cache_only_never_fetches(monkeypatch, tmp_path):
+    # research that must not spend on vendor calls asks for cache_only=True:
+    # a hit reads the cache, a miss raises NotCached -- never a paid fetch
+    import nussif_data as nd
+    from nussif_data.cache import cached
+    from nussif_data.connectors.databento import DatabentoConnector
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+
+    def no_network(*a, **k):
+        raise AssertionError("fetched with cache_only=True")
+
+    monkeypatch.setattr(DatabentoConnector, "_client", no_network)
+    monkeypatch.setattr(DatabentoConnector, "_one", no_network)
+    monkeypatch.setattr(DatabentoConnector, "_one_oi", no_network)
+    with pytest.raises(nd.NotCached, match="TLT/2020-01-08"):
+        nd.databento.option_chain(
+            "TLT", date="2020-01-08", moneyness=0.25, min_dte=15, max_dte=60, cache_only=True
+        )
+    with pytest.raises(nd.NotCached):
+        nd.databento.open_interest("TLT", date="2020-01-08", cache_only=True)
+    with pytest.raises(ValueError, match="contradict"):
+        nd.databento.option_chain("TLT", date="2020-01-08", cache_only=True, refresh=True)
+    frame = pd.DataFrame(
+        {
+            "symbol": ["TLT"],
+            "date": [pd.Timestamp("2020-01-08")],
+            "expiration": [pd.Timestamp("2020-02-21")],
+            "strike": [130.0],
+            "right": ["P"],
+            "bid": [1.0],
+            "ask": [1.1],
+            "bid_size": pd.array([10], dtype="uint32"),
+            "ask_size": pd.array([10], dtype="uint32"),
+        }
+    )
+    cached("databento/option_chain/TLT/2020-01-08/m0.25_d15-60", lambda: frame)
+    got = nd.databento.option_chain(
+        "TLT", date="2020-01-08", moneyness=0.25, min_dte=15, max_dte=60, cache_only=True
+    )
+    assert len(got) == 1
+    assert isinstance(nd.NotCached("x"), nd.NussifDataError)

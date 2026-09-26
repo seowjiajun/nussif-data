@@ -38,9 +38,9 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from .._config import get_key
-from ..cache import cache_dir, cached
+from ..cache import cache_dir, cached, is_cached
 from ..core import Connector, Dataset
-from ..core.errors import OutsideHistory, UpstreamError
+from ..core.errors import NotCached, OutsideHistory, UpstreamError
 from ..core.schema import OPEN_INTEREST, OPTION_CHAIN
 
 _STAT_TYPE_OPEN_INTEREST = 9  # databento_dbn.StatType.OPEN_INTEREST
@@ -109,6 +109,16 @@ def _guess_spot(defn: pd.DataFrame) -> float:
     return float(nx.median() if len(nx) else defn["strike"].median())
 
 
+def _require_cached(keys, refresh: bool) -> None:
+    """For `cache_only` requests: raise `NotCached` unless every key is on disk
+    (and no `refresh` was asked for, which would fetch)."""
+    if refresh:
+        raise ValueError("cache_only=True and refresh=True contradict each other")
+    missing = [k for k in keys if not is_cached(k)]
+    if missing:
+        raise NotCached(f"not in the local cache (cache_only=True): {', '.join(missing)}")
+
+
 class DatabentoConnector(Connector):
     name = "databento"
     primary_method = "option_chain"
@@ -159,6 +169,7 @@ class DatabentoConnector(Connector):
         min_dte=None,
         max_dte=None,
         refresh: bool = False,
+        cache_only: bool = False,
     ):
         """EOD option chain for each `symbol` on `date` (YYYY-MM-DD), filtered to
         strikes within +-`moneyness` of spot and DTE in [`min_dte`, `max_dte`].
@@ -168,6 +179,8 @@ class DatabentoConnector(Connector):
         `min_dte` -- raise it (e.g. 15) to drop the daily / weekly expiries; on
         SPY/QQQ these otherwise blow past Databento's 2,000-symbol quote cap.
         Returns the canonical option-chain frame; `right` in {'C','P'}. No IV/greeks/OI.
+        `cache_only` -- raise `NotCached` instead of fetching a chain that isn't
+        cached (research that must not spend on vendor calls).
         """
         spec = self.cfg["datasets"]["option_chain"]
         mny = spec.get("default_moneyness", 0.25) if moneyness is None else moneyness
@@ -187,9 +200,12 @@ class DatabentoConnector(Connector):
         # includes " 00:00:00" -- Databento's `start`/`end` reject that, only clean ISO dates
         self._check_history(date_str, spec)
 
+        keys = {s: f"databento/option_chain/{s}/{date_str}/m{mny}_d{ndte}-{mdte}" for s in syms}
+        if cache_only:
+            _require_cached(keys.values(), refresh)
         frames = [
             cached(
-                f"databento/option_chain/{s}/{date_str}/m{mny}_d{ndte}-{mdte}",
+                keys[s],
                 lambda s=s: self._one(s, date_str, spot, mny, ndte, mdte),
                 refresh=refresh,
             )
@@ -198,7 +214,7 @@ class DatabentoConnector(Connector):
         out = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
         return OPTION_CHAIN.validate(out, where="databento.option_chain")
 
-    def open_interest(self, *symbols, date, refresh: bool = False):
+    def open_interest(self, *symbols, date, refresh: bool = False, cache_only: bool = False):
         """Daily open interest per contract for each `symbol` on `date`
         (YYYY-MM-DD), from Databento's `statistics` schema. One row per listed
         contract with nonzero OI that day -- no moneyness/DTE band (the whole
@@ -206,7 +222,8 @@ class DatabentoConnector(Connector):
         quote-cap-constrained `cbbo-1m` stage `option_chain` needs), so filter
         the result yourself, or join it to a same-day `option_chain(date=date)`
         frame on (expiration, strike, right). See the module docstring for the
-        AM-print/same-day convention this assumes.
+        AM-print/same-day convention this assumes. `cache_only` -- raise
+        `NotCached` instead of fetching.
         """
         syms = [
             str(s).upper()
@@ -223,13 +240,11 @@ class DatabentoConnector(Connector):
         # same OPRA.PILLAR feed as option_chain, so the same history
         self._check_history(date_str, self.cfg.get("datasets", {}).get("option_chain", {}))
 
+        keys = {s: f"databento/open_interest/{s}/{date_str}" for s in syms}
+        if cache_only:
+            _require_cached(keys.values(), refresh)
         frames = [
-            cached(
-                f"databento/open_interest/{s}/{date_str}",
-                lambda s=s: self._one_oi(s, date_str),
-                refresh=refresh,
-            )
-            for s in syms
+            cached(keys[s], lambda s=s: self._one_oi(s, date_str), refresh=refresh) for s in syms
         ]
         out = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
         return OPEN_INTEREST.validate(out, where="databento.open_interest")

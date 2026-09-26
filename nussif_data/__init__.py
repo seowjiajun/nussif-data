@@ -46,6 +46,7 @@ from .core import ConnectorRegistry
 from .core.errors import (
     AuthError,
     DatasetNotFound,
+    NotCached,
     NotEntitled,
     NussifDataError,
     OutsideHistory,
@@ -54,11 +55,12 @@ from .core.errors import (
     UpstreamError,
 )
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 __all__ = [
     "REGISTRY",
     "AuthError",
     "DatasetNotFound",
+    "NotCached",
     "NotEntitled",
     "NussifDataError",
     "OutsideHistory",

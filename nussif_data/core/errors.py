@@ -24,6 +24,11 @@ class OutsideHistory(NussifDataError):
     (`history_start` in the catalog) -- no data exists, so nothing is fetched."""
 
 
+class NotCached(NussifDataError):
+    """A `cache_only=True` request for data that isn't in the local cache --
+    raised instead of fetching (a paid vendor call)."""
+
+
 class UpstreamError(NussifDataError):
     """5xx, network failure, or an unparseable/empty response from the vendor."""
 
