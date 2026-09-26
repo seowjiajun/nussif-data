@@ -523,49 +523,61 @@ class OptionChainFetcher:
         return float(bar["c"])
 
     def _get_contracts(self, sym: str, date_str: str, spot: float, mny, ndte, mdte) -> pd.DataFrame:
-        """That date's contract band -- Endpoint 5 (contract reference), every
-        contract whose expiry falls in the DTE window and whose strike is in
-        the moneyness band, paginated through the shared HttpClient
-        (sequential -- a handful of requests, not the per-contract quote stage
-        that needs concurrency).
+        """That date's contract band -- Endpoint 5 (contract reference): every
+        contract of every expiry listed on `date_str` inside the DTE window,
+        with its strike in the moneyness band. Paginated through the shared
+        HttpClient (sequential -- a handful of requests, not the per-contract
+        quote stage that needs concurrency).
 
-        Listed by expiry window, NOT by `as_of`: Massive's `as_of` snapshot is
-        incomplete -- QQQ on 2023-12-11 listed 70 contracts for the
-        2024-01-19 monthly (strikes up to 389, spot 395), where listing that
-        expiry directly returns every strike to 490. So both `expired=true`
-        (expiries before today) and `expired=false` are listed and merged;
-        a contract that wasn't trading yet on `date_str` simply has no quote
-        that day, and the quote stage drops it. (`expired=true` together with
-        `as_of` returns nothing, whatever the reason.)
+        Two steps, because Massive's `as_of` snapshot is right about *which
+        expiries* were listed but incomplete about their *strikes* -- QQQ on
+        2023-12-11 listed 70 contracts for the 2024-01-19 monthly (strikes to
+        389, spot 395) where that expiry's own listing has every strike to 490:
+
+        1. the `as_of` listing, for the set of expiries live that day;
+        2. each of those expiries listed in full (`expired=true` if it has
+           expired by now, else `false`; `expired=true` together with `as_of`
+           returns nothing).
+
+        Listing the whole DTE window without `as_of` instead would add every
+        daily expiry ever created in it -- on QQQ ~8x the contracts, almost
+        none trading yet on `date_str`, each costing quote calls for nothing.
+        A strike added after `date_str` just has no quote that day, and the
+        quote stage drops it.
 
         Only strikes on the catalog's `strike_grid` (default $0.50) are kept:
-        the full listing also returns adjusted contracts from past corporate
+        full listings also return adjusted contracts from past corporate
         actions (e.g. QQQ strikes at x.78), whose deliverable isn't 100 plain
         shares -- `shares_per_contract` doesn't flag them, their strikes do."""
         day = pd.Timestamp(date_str)
         spec = self.cfg["composites"]["option_chain"]
         grid = float(spec.get("strike_grid", 0.5))
         contracts_path = self.cfg["endpoints"]["option_contracts"]["endpoint"]
-        params = {"underlying_ticker": sym, "limit": 1000}
+        band = {"underlying_ticker": sym, "limit": 1000}
         if mny is not None:
-            params["strike_price.gte"] = spot * (1 - mny)
-            params["strike_price.lte"] = spot * (1 + mny)
+            band["strike_price.gte"] = spot * (1 - mny)
+            band["strike_price.lte"] = spot * (1 + mny)
+        window = {}
         if ndte is not None:
-            params["expiration_date.gte"] = (day + pd.Timedelta(days=ndte)).strftime("%Y-%m-%d")
+            window["expiration_date.gte"] = (day + pd.Timedelta(days=ndte)).strftime("%Y-%m-%d")
         if mdte is not None:
-            params["expiration_date.lte"] = (day + pd.Timedelta(days=mdte)).strftime("%Y-%m-%d")
+            window["expiration_date.lte"] = (day + pd.Timedelta(days=mdte)).strftime("%Y-%m-%d")
 
-        rows: list[dict] = []
-        for expired in ("true", "false"):
-            next_url = None
+        def listing(params):
+            rows, next_url = [], None
             while True:
-                j = self.http.get_json(
-                    next_url or contracts_path, {} if next_url else params | {"expired": expired}
-                )
+                j = self.http.get_json(next_url or contracts_path, {} if next_url else params)
                 rows.extend(j.get("results") or [])
                 next_url = j.get("next_url")
                 if not next_url:
-                    break
+                    return rows
+
+        snapshot = listing(band | window | {"as_of": date_str})
+        today = pd.Timestamp.today().strftime("%Y-%m-%d")
+        rows = list(snapshot)
+        for expiry in sorted({r["expiration_date"] for r in snapshot}):
+            expired = "true" if expiry < today else "false"
+            rows.extend(listing(band | {"expiration_date": expiry, "expired": expired}))
         df = pd.DataFrame(rows)
         if not df.empty:
             df = df.drop_duplicates("ticker")
@@ -645,42 +657,49 @@ class OptionChainFetcher:
         return pd.DataFrame(rows)
 
     def _quote_one(self, ticker: str, day: pd.Timestamp, api_key: str) -> dict | None:
-        """Narrow-window-then-fallback EOD quote for ONE contract, ONE date."""
+        """The last quote at or before the close for ONE contract, ONE date --
+        one request over the widest window in the catalog's
+        `fallback_lookbacks_min` (sorted descending, limit 1, so it returns the
+        same quote a narrower window would whenever one exists there).
+        `lookback_min_used` is the narrowest of those windows the quote falls
+        in -- 3 for a live closing quote, larger for a stale one -- the same
+        flag the old narrow-then-wider ladder recorded, without its extra
+        calls for every contract that has no quote at all (on QQQ about a
+        third of the listed contracts)."""
         spec = self.cfg["composites"]["option_chain"]
+        tz, hhmm = spec.get("close_tz", "America/New_York"), spec.get("close_time", "16:00")
+        ladder = sorted(spec.get("fallback_lookbacks_min", (3, 60, 390)))
         quote_endpoint = self.cfg["endpoints"]["quotes"]["endpoint"]
         url = self.cfg["base_url"] + quote_endpoint.format(ticker=ticker)
-        for lookback in spec.get("fallback_lookbacks_min", (3, 60, 390)):
-            start, end = _close_window_utc(
-                day,
-                spec.get("close_tz", "America/New_York"),
-                spec.get("close_time", "16:00"),
-                lookback,
+        start, end = _close_window_utc(day, tz, hhmm, ladder[-1])
+        params = {
+            "timestamp.gte": start,
+            "timestamp.lte": end,
+            "limit": 1,
+            "sort": "timestamp",
+            "order": "desc",
+            "apiKey": api_key,
+        }
+        r = self._pooled_get(url, params)
+        if r.status_code == 429:
+            raise RateLimited(f"massive: 429 fetching quotes for {ticker} after retries")
+        if r.status_code >= 400:
+            # not raise_for_status(): its message carries the URL, apiKey included
+            raise UpstreamError(
+                f"massive: HTTP {r.status_code} fetching the quote for {ticker} on {day:%Y-%m-%d}"
             )
-            params = {
-                "timestamp.gte": start,
-                "timestamp.lte": end,
-                "limit": 1,
-                "sort": "timestamp",
-                "order": "desc",
-                "apiKey": api_key,
-            }
-            r = self._pooled_get(url, params)
-            if r.status_code == 429:
-                raise RateLimited(f"massive: 429 fetching quotes for {ticker} after retries")
-            if r.status_code >= 400:
-                # not raise_for_status(): its message carries the URL, apiKey included
-                raise UpstreamError(
-                    f"massive: HTTP {r.status_code} fetching the quote for {ticker} on "
-                    f"{day:%Y-%m-%d}"
-                )
-            results = r.json().get("results") or []
-            if results:
-                row = dict(results[0])
-                row["ticker"] = ticker
-                row["date"] = day.strftime("%Y-%m-%d")
-                row["lookback_min_used"] = lookback
-                return row
-        return None
+        results = r.json().get("results") or []
+        if not results:
+            return None
+        row = dict(results[0])
+        close = pd.Timestamp(_close_window_utc(day, tz, hhmm, 0, lookahead_min=0)[1])
+        age_min = (
+            close - pd.Timestamp(row["sip_timestamp"], unit="ns", tz="UTC")
+        ).total_seconds() / 60
+        row["ticker"] = ticker
+        row["date"] = day.strftime("%Y-%m-%d")
+        row["lookback_min_used"] = next((w for w in ladder if age_min <= w), ladder[-1])
+        return row
 
     @staticmethod
     def _assemble(contracts_df: pd.DataFrame, quotes_df: pd.DataFrame) -> pd.DataFrame:

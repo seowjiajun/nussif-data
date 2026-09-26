@@ -844,84 +844,67 @@ def test_massive_close_window_utc_handles_dst():
     assert end_jun.endswith("20:01:00+00:00")
 
 
-def test_massive_get_contracts_moneyness_none_drops_filter(monkeypatch):
+def _contracts_conn(pages, grid=0.5):
     from nussif_data.connectors.massive.options import OptionChainFetcher
 
     conn = OptionChainFetcher.__new__(OptionChainFetcher)
     conn.cfg = {
         "endpoints": {"option_contracts": {"endpoint": "/v3/reference/options/contracts"}},
-        "composites": {"option_chain": {}},
+        "composites": {"option_chain": {"strike_grid": grid}},
     }
     conn.http = type("H", (), {})()
-
     seen = []
 
     def _fake_get_json(path, params=None):
         seen.append(params)
-        return {
-            "results": [{"ticker": "O:SPY240621C00540000", "strike_price": 540.0}],
-            "next_url": None,
-        }
+        return {"results": pages(params), "next_url": None}
 
     conn.http.get_json = _fake_get_json
+    return conn, seen
+
+
+def test_massive_get_contracts_moneyness_none_drops_filter():
+    row = {"ticker": "O:SPY240621C00540000", "strike_price": 540.0, "expiration_date": "2024-06-21"}
+    conn, seen = _contracts_conn(lambda params: [row])
     df = conn._get_contracts("SPY", "2024-06-03", 527.0, None, None, None)
-    assert len(df) == 1  # the same contract from both listings, once
+    assert len(df) == 1  # the same contract from both steps, once
     assert all("strike_price.gte" not in p and "expiration_date.gte" not in p for p in seen)
-    assert all("as_of" not in p for p in seen)  # as_of snapshots are incomplete
-    assert sorted(p["expired"] for p in seen) == ["false", "true"]
+    assert seen[0]["as_of"] == "2024-06-03"  # step 1: which expiries were live
+    assert seen[1]["expiration_date"] == "2024-06-21" and "as_of" not in seen[1]
+    assert seen[1]["expired"] == "true"  # expired by now
 
 
-def test_massive_get_contracts_merges_listings_and_drops_adjusted_strikes(monkeypatch):
+def test_massive_get_contracts_default_band_filters():
+    conn, seen = _contracts_conn(lambda params: [])
+    conn._get_contracts("SPY", "2024-06-03", 500.0, 0.25, 15, 60)
+    assert seen[0]["strike_price.gte"] == pytest.approx(375.0)
+    assert seen[0]["strike_price.lte"] == pytest.approx(625.0)
+    assert seen[0]["expiration_date.gte"] == "2024-06-18"
+    assert seen[0]["expiration_date.lte"] == "2024-08-02"
+    assert len(seen) == 1  # no expiries listed that day: nothing more to ask
+
+
+def test_massive_get_contracts_fills_strikes_the_snapshot_missed():
     # QQQ 2023-12-11: the as_of snapshot listed strikes only to 389 for the
-    # 2024-01-19 monthly; listing the expiry directly returns them all, plus
-    # adjusted contracts (x.78 strikes) that must not be traded as standard ones
-    from nussif_data.connectors.massive.options import OptionChainFetcher
+    # 2024-01-19 monthly; the expiry's own listing has them all, plus adjusted
+    # contracts (x.78 strikes) that must not be traded as standard ones --
+    # and daily expiries the snapshot rightly left out are never asked for
+    def pages(params):
+        e = "2024-01-19"
+        if "as_of" in params:
+            return [{"ticker": "O:QQQ240119C00389000", "strike_price": 389.0, "expiration_date": e}]
+        assert params["expiration_date"] == e
+        return [
+            {"ticker": "O:QQQ240119C00389000", "strike_price": 389.0, "expiration_date": e},
+            {"ticker": "O:QQQ240119C00420000", "strike_price": 420.0, "expiration_date": e},
+            {"ticker": "O:QQQ240119C00329780", "strike_price": 329.78, "expiration_date": e},
+            {"ticker": "O:QQQ240119C00402500", "strike_price": 402.5, "expiration_date": e},
+        ]
 
-    conn = OptionChainFetcher.__new__(OptionChainFetcher)
-    conn.cfg = {
-        "endpoints": {"option_contracts": {"endpoint": "/v3/reference/options/contracts"}},
-        "composites": {"option_chain": {"strike_grid": 0.5}},
-    }
-    conn.http = type("H", (), {})()
-    pages = {
-        "true": [
-            {"ticker": "O:QQQ240119C00389000", "strike_price": 389.0},
-            {"ticker": "O:QQQ240119C00420000", "strike_price": 420.0},
-            {"ticker": "O:QQQ240119C00329780", "strike_price": 329.78},
-            {"ticker": "O:QQQ240119C00402500", "strike_price": 402.5},
-        ],
-        "false": [{"ticker": "O:QQQ240119C00389000", "strike_price": 389.0}],
-    }
-    conn.http.get_json = lambda path, params=None: {
-        "results": pages[params["expired"]],
-        "next_url": None,
-    }
+    conn, seen = _contracts_conn(pages)
     df = conn._get_contracts("QQQ", "2023-12-11", 395.0, 0.25, 15, 60)
     assert sorted(df["strike_price"]) == [389.0, 402.5, 420.0]
-
-
-def test_massive_get_contracts_default_band_filters(monkeypatch):
-    from nussif_data.connectors.massive.options import OptionChainFetcher
-
-    conn = OptionChainFetcher.__new__(OptionChainFetcher)
-    conn.cfg = {
-        "endpoints": {"option_contracts": {"endpoint": "/v3/reference/options/contracts"}},
-        "composites": {"option_chain": {}},
-    }
-    conn.http = type("H", (), {})()
-
-    seen = {}
-
-    def _fake_get_json(path, params=None):
-        seen["params"] = params
-        return {"results": [], "next_url": None}
-
-    conn.http.get_json = _fake_get_json
-    conn._get_contracts("SPY", "2024-06-03", 500.0, 0.25, 15, 60)
-    assert seen["params"]["strike_price.gte"] == pytest.approx(375.0)
-    assert seen["params"]["strike_price.lte"] == pytest.approx(625.0)
-    assert seen["params"]["expiration_date.gte"] == "2024-06-18"
-    assert seen["params"]["expiration_date.lte"] == "2024-08-02"
+    assert len(seen) == 2
 
 
 def test_massive_assemble_builds_canonical_shape():
@@ -1242,9 +1225,12 @@ def test_massive_option_chain_estimate_skips_cached_day(monkeypatch, tmp_path):
 def test_massive_option_chain_estimate_projects_from_contract_count(monkeypatch, tmp_path):
     monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
     monkeypatch.setattr(nd.massive.option_chain, "_spot_on", lambda sym, date_str: 500.0)
-    # the same page for expired=true and =false: dedupe by ticker keeps 200
+    # the same page for the snapshot and the expiry listing: dedupe keeps 200
     contracts_canned = {
-        "results": [{"ticker": f"O:SPY{i}", "strike_price": 400.0 + i} for i in range(200)],
+        "results": [
+            {"ticker": f"O:SPY{i}", "strike_price": 400.0 + i, "expiration_date": "2024-06-21"}
+            for i in range(200)
+        ],
         "next_url": None,
     }
     monkeypatch.setattr(nd.massive.http, "get_json", lambda *a, **k: contracts_canned)
@@ -1743,3 +1729,36 @@ def test_massive_quote_get_retries_transient_server_errors(monkeypatch):
 
     conn._session = Session()
     assert conn._pooled_get("u", {}, max_retries=5).status_code == 200
+
+
+def test_massive_quote_one_is_one_call_and_flags_staleness_from_the_timestamp(monkeypatch):
+    from nussif_data.connectors.massive import options as mo
+
+    conn = mo.OptionChainFetcher.__new__(mo.OptionChainFetcher)
+    conn.cfg = {
+        "base_url": "https://api.massive.com",
+        "endpoints": {"quotes": {"endpoint": "/v3/quotes/{ticker}"}},
+        "composites": {"option_chain": {"fallback_lookbacks_min": [3, 60, 390]}},
+    }
+    close = pd.Timestamp("2024-06-12 20:00", tz="UTC")  # 16:00 New York, EDT
+    calls = []
+
+    def respond(minutes_before_close):
+        results = (
+            []
+            if minutes_before_close is None
+            else [{"sip_timestamp": (close - pd.Timedelta(minutes=minutes_before_close)).value}]
+        )
+        return type("R", (), {"status_code": 200, "json": lambda self: {"results": results}})()
+
+    for before, flag in ((1, 3), (30, 60), (200, 390), (None, None)):
+
+        def fake_get(url, params, before=before):
+            calls.append(params)
+            return respond(before)
+
+        monkeypatch.setattr(conn, "_pooled_get", fake_get)
+        row = conn._quote_one("O:QQQ240719P00440000", pd.Timestamp("2024-06-12"), "k")
+        assert (row is None) if flag is None else row["lookback_min_used"] == flag
+    assert len(calls) == 4  # one request per contract, found or not
+    assert calls[0]["timestamp.gte"].startswith("2024-06-12T13:30")  # 390 min before the close
