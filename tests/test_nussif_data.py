@@ -1762,3 +1762,14 @@ def test_massive_quote_one_is_one_call_and_flags_staleness_from_the_timestamp(mo
         assert (row is None) if flag is None else row["lookback_min_used"] == flag
     assert len(calls) == 4  # one request per contract, found or not
     assert calls[0]["timestamp.gte"].startswith("2024-06-12T13:30")  # 390 min before the close
+
+
+def test_naive_midnight_fast_path_matches_the_parse():
+    from nussif_data.core.schema import _naive_midnight
+
+    raw = pd.Series(["2024-06-03 15:59", "2024-06-04 00:00", None])
+    parsed = _naive_midnight(raw)
+    already = _naive_midnight(pd.to_datetime(raw))
+    pd.testing.assert_series_equal(parsed, already)
+    aware = pd.Series(pd.to_datetime(["2024-06-03 23:30"]).tz_localize("US/Eastern"))
+    assert _naive_midnight(aware).iloc[0] == pd.Timestamp("2024-06-04")  # 03:30 UTC

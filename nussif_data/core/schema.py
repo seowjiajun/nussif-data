@@ -29,8 +29,11 @@ _FAMILIES = {
 
 
 def _naive_midnight(s: pd.Series) -> pd.Series:
-    """Coerce to datetime, drop any tz (in UTC), floor to midnight."""
-    s = pd.to_datetime(s, errors="coerce")
+    """Coerce to datetime, drop any tz (in UTC), floor to midnight. A column
+    that is already datetime skips the parse -- `to_datetime(errors="coerce")`
+    walks it element by element, and it runs on every cached chain read."""
+    if not pd.api.types.is_datetime64_any_dtype(s):
+        s = pd.to_datetime(s, errors="coerce")
     if getattr(s.dt, "tz", None) is not None:
         s = s.dt.tz_convert("UTC").dt.tz_localize(None)
     return s.dt.normalize()
