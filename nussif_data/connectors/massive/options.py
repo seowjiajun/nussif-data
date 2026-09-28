@@ -21,8 +21,8 @@ import pandas as pd
 
 from ... import _util
 from ..._config import get_key
-from ...cache import cache_dir, cached, is_cached, require_cached
-from ...core.errors import OutsideHistory, RateLimited, UpstreamError
+from ...cache import cache_dir, cached, dated_keys, is_cached, read_many, require_cached
+from ...core.errors import NotCached, OutsideHistory, RateLimited, UpstreamError
 from ...core.http import _redact
 from ...core.schema import OPTION_CHAIN
 from . import bars
@@ -81,6 +81,19 @@ _ADDED_COLUMNS = (
 )
 
 
+def _band_tag(mny, ndte, mdte) -> str:
+    """The cache-key suffix for a (moneyness, min_dte, max_dte) band; `None`
+    in any slot means that filter is off."""
+    m_tag = "all" if mny is None else str(mny)
+    lo_tag = "0" if ndte is None else str(ndte)
+    hi_tag = "inf" if mdte is None else str(mdte)
+    return f"m{m_tag}_dte{lo_tag}-{hi_tag}"
+
+
+def _chain_key(sym: str, date_str: str, band_tag: str) -> str:
+    return f"massive/option_chain/{sym}/{date_str}/{band_tag}"
+
+
 class OptionChainRequest:
     """A built, validated option_chain request -- symbols/days/moneyness-DTE
     band/worker count are all already resolved; nothing here does network I/O
@@ -104,17 +117,14 @@ class OptionChainRequest:
         self.mdte = mdte
         self.workers = workers
         self.raw = raw
-        m_tag = "all" if mny is None else str(mny)
-        lo_tag = "0" if ndte is None else str(ndte)
-        hi_tag = "inf" if mdte is None else str(mdte)
-        self._band_tag = f"m{m_tag}_dte{lo_tag}-{hi_tag}"
+        self._band_tag = _band_tag(mny, ndte, mdte)
 
     def _cache_key(self, sym: str, date_str: str) -> str:
         # no raw/ prefix -- raw=True and raw=False produce identical content
         # now (both return nd's canonical shape; raw= only changes .fetch()'s
         # return packaging), so caching them separately would just be the
         # same data written to disk twice under two different paths.
-        return f"massive/option_chain/{sym}/{date_str}/{self._band_tag}"
+        return _chain_key(sym, date_str, self._band_tag)
 
     def _metadata_for(self, sym: str, date_str: str) -> dict[str, str]:
         # nussif_data.__version__ imported lazily -- options.py loads DURING
@@ -432,9 +442,7 @@ class OptionChainFetcher:
             )
 
         spec = self.cfg["composites"]["option_chain"]
-        mny = spec.get("default_moneyness", 0.25) if moneyness is _UNSET else moneyness
-        ndte = spec.get("default_min_dte", 15) if min_dte is _UNSET else min_dte
-        mdte = spec.get("default_max_dte", 60) if max_dte is _UNSET else max_dte
+        mny, ndte, mdte = self._band(moneyness, min_dte, max_dte)
         workers = int(max_workers if max_workers is not None else spec.get("max_workers", 80))
 
         syms = [
@@ -464,6 +472,38 @@ class OptionChainFetcher:
                 raise ValueError(f"no trading days for {syms[0]} between {start} and {end}")
 
         return OptionChainRequest(self, syms, date_strs, spot, mny, ndte, mdte, workers, raw)
+
+    def history(
+        self, symbol, *, start, end, moneyness=_UNSET, min_dte=_UNSET, max_dte=_UNSET
+    ) -> pd.DataFrame:
+        """Every cached EOD chain for `symbol` dated in [`start`, `end`], as
+        one frame: each day's rows exactly as `option_chain(symbol, date=...)
+        .fetch()` returns them, concatenated in date order, read in one scan
+        (`cache.read_many`). Band arguments as for `option_chain(...)`.
+
+        Cache only, and the days are the ones on disk: unlike a
+        `start`/`end` request it never looks up trading days from daily bars
+        (which can fetch them) -- a missing day is simply absent, and an
+        empty cached day is skipped. Raises `NotCached` if no day in the
+        range is cached for this band."""
+        sym = str(symbol).upper()
+        tag = _band_tag(*self._band(moneyness, min_dte, max_dte))
+        lo, hi = (pd.Timestamp(d).strftime("%Y-%m-%d") for d in (start, end))
+        keys = dated_keys(f"massive/option_chain/{sym}", tag, lo, hi)
+        out = read_many(keys)
+        if out is None:
+            raise NotCached(f"massive: no {sym} option chain cached in [{lo}, {hi}] for {tag}")
+        return out
+
+    def _band(self, moneyness, min_dte, max_dte) -> tuple:
+        """(moneyness, min_dte, max_dte) with the catalog defaults for any
+        argument left `_UNSET` (an explicit None keeps that filter off)."""
+        spec = self.cfg["composites"]["option_chain"]
+        return (
+            spec.get("default_moneyness", 0.25) if moneyness is _UNSET else moneyness,
+            spec.get("default_min_dte", 15) if min_dte is _UNSET else min_dte,
+            spec.get("default_max_dte", 60) if max_dte is _UNSET else max_dte,
+        )
 
     def _trading_days(self, symbol: str, start, end) -> list[str]:
         """Real trading days in [start, end], from `symbol`'s own daily bars --
@@ -740,10 +780,13 @@ class OptionChainFetcher:
                 "symbol": merged["underlying_ticker"],
                 "date": merged["date"],
                 "expiration": pd.to_datetime(merged["expiration_date"]),
-                "strike": merged["strike_price"],
+                # float64 always: JSON gives ints when every value that day is
+                # whole, which made a day's strike column int64 and broke
+                # reading several days' files as one table
+                "strike": merged["strike_price"].astype("float64"),
                 "right": merged["contract_type"].str[0].str.upper(),
-                "bid": merged["bid_price"],
-                "ask": merged["ask_price"],
+                "bid": merged["bid_price"].astype("float64"),
+                "ask": merged["ask_price"].astype("float64"),
                 "ticker": merged["ticker"],
                 "bid_size": merged["bid_size"],
                 "ask_size": merged["ask_size"],

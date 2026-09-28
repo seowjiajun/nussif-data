@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from contextlib import contextmanager
 
 import pandas as pd
 
@@ -83,6 +84,7 @@ def cached(
     applied when the cache is actually (re)built -- reading an existing
     cache hit never rewrites it, so passing `metadata` doesn't retroactively
     add it to a file already on disk from before this was called with it."""
+    note(("file", key))
     path = _path_for(key)
     if os.path.exists(path) and not refresh:
         return pd.read_parquet(path)
@@ -120,7 +122,126 @@ def is_cached(key: str) -> bool:
     """Whether `key` already has a cached result on disk -- lets a caller skip
     work for free (no build_fn call) instead of paying for a fetch just to
     find out it would've been a cache hit anyway."""
+    note(("file", key))  # absent counts too: a later fill must be seen
     return os.path.exists(_path_for(key))
+
+
+def dated_keys(prefix: str, tail: str, start: str, end: str) -> list[str]:
+    """The cached keys `<prefix>/<YYYY-MM-DD>/<tail>` with a date in [`start`,
+    `end`] (ISO strings), in date order -- e.g. one symbol's option chains
+    for one band over a year. One directory listing plus a stat per day in
+    range, no parquet reads and no network: how a cache-only range read
+    finds its days without asking a vendor which days exist."""
+    note(("listing", prefix, tail, start, end))
+    return _dated_keys(prefix, tail, start, end)
+
+
+def _dated_keys(prefix: str, tail: str, start: str, end: str) -> list[str]:
+    try:
+        days = os.listdir(os.path.join(cache_dir(), *prefix.split("/")))
+    except FileNotFoundError:
+        return []
+    keys = (f"{prefix}/{d}/{tail}" for d in sorted(days) if start <= d <= end)
+    return [k for k in keys if os.path.exists(_path_for(k))]
+
+
+def read_many(keys) -> pd.DataFrame | None:
+    """The cached files for `keys` as one table, read in a single pyarrow
+    dataset scan instead of one `read_parquet` per key (~4-7x faster over a
+    year of daily option chains). Rows keep `keys` order. Uncached keys and
+    empty (zero-row) files are skipped; None if nothing is left.
+
+    Raises `SchemaError` if the files disagree on column names or types --
+    one scan would otherwise cast every file to the first one's types (an
+    int64 `strike` truncating another day's 602.5), silently."""
+    import pyarrow.dataset as ds
+    import pyarrow.parquet as pq
+
+    from .core.errors import SchemaError
+
+    paths, schema, first = [], None, None
+    for key in keys:
+        note(("file", key))
+        path = _path_for(key)
+        if not os.path.exists(path):
+            continue
+        meta = pq.read_metadata(path)
+        if meta.num_rows == 0:
+            continue
+        file_schema = meta.schema.to_arrow_schema()
+        if schema is None:
+            schema, first = file_schema, key
+        elif not file_schema.remove_metadata().equals(schema.remove_metadata()):
+            raise SchemaError(
+                f"cached files disagree on schema: {key} has "
+                f"{file_schema.remove_metadata()} but {first} has "
+                f"{schema.remove_metadata()} -- rewrite the odd file(s) with one set of types"
+            )
+        paths.append(path)
+    if not paths:
+        return None
+    # the first file's schema carries pandas' metadata, so dtypes round-trip
+    # exactly as a single read_parquet would give them
+    return ds.dataset(paths, format="parquet", schema=schema).to_table().to_pandas()
+
+
+class Recording:
+    """What the cache was asked for inside one `recording()` block: a set of
+    entries, ("file", key) for every key read, built or looked up (present or
+    not) and ("listing", prefix, tail, start, end) for every range of days
+    listed. Plain tuples of strings, so a caller can store them as JSON."""
+
+    def __init__(self):
+        self.entries: set[tuple] = set()
+
+
+_RECORDINGS: list[Recording] = []
+
+
+@contextmanager
+def recording():
+    """Record every cache access inside the block -- the inputs of whatever
+    is computed there, so a result derived from market data can be cached
+    and later checked against its inputs (`fingerprint`). Nests: an access
+    is noted in every open recording."""
+    rec = Recording()
+    _RECORDINGS.append(rec)
+    try:
+        yield rec
+    finally:
+        _RECORDINGS[:] = [r for r in _RECORDINGS if r is not rec]
+
+
+def note(*entries: tuple) -> None:
+    """Add `entries` to every open recording. The cache notes its own
+    accesses; call this to replay the inputs of something served from a
+    memo or a derived cache, which read them earlier and not now."""
+    for rec in _RECORDINGS:
+        rec.entries.update(entries)
+
+
+def fingerprint(entries) -> str:
+    """Short hash of the current state on disk of recorded `entries`: each
+    file's size and modification time (or its absence) and each listed
+    range's days. It changes when a day is added (a gap filled), refetched
+    or rewritten -- a result derived from these inputs is stale exactly when
+    this differs from the value stored with it. Stats and listings only."""
+    import hashlib
+
+    h = hashlib.sha256()
+    for entry in sorted(tuple(e) for e in entries):
+        if entry[0] == "file":
+            try:
+                st = os.stat(_path_for(entry[1]))
+                state = f"{st.st_size}:{st.st_mtime_ns}"
+            except FileNotFoundError:
+                state = "absent"
+        elif entry[0] == "listing":
+            state = ",".join(_dated_keys(*entry[1:]))
+        else:
+            raise ValueError(f"unknown recorded entry {entry!r}")
+        h.update(f"{entry}={state};".encode())
+    return h.hexdigest()[:10]
 
 
 def cache_summary() -> list[dict]:

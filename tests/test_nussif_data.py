@@ -1773,3 +1773,157 @@ def test_naive_midnight_fast_path_matches_the_parse():
     pd.testing.assert_series_equal(parsed, already)
     aware = pd.Series(pd.to_datetime(["2024-06-03 23:30"]).tz_localize("US/Eastern"))
     assert _naive_midnight(aware).iloc[0] == pd.Timestamp("2024-06-04")  # 03:30 UTC
+
+
+# --- cache range reads ------------------------------------------------------
+def _chain_day(day, strikes=(100.0, 105.0), sym="SPY"):
+    return pd.DataFrame(
+        {
+            "symbol": sym,
+            "date": pd.Timestamp(day),
+            "expiration": pd.Timestamp("2024-07-19"),
+            "strike": list(strikes),
+            "right": "P",
+            "bid": 1.0,
+            "ask": 1.1,
+        }
+    )
+
+
+def _put(key, df):
+    from nussif_data.cache import _path_for, write_parquet
+
+    path = _path_for(key)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    write_parquet(df, path)
+
+
+def test_read_many_keeps_key_order_and_skips_missing_and_empty(monkeypatch, tmp_path):
+    from nussif_data.cache import read_many
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    _put("t/b", _chain_day("2024-06-04"))
+    _put("t/a", _chain_day("2024-06-03"))
+    _put("t/empty", pd.DataFrame())
+    out = read_many(["t/b", "t/missing", "t/empty", "t/a"])
+    assert list(out["date"].dt.day) == [4, 4, 3, 3]
+    assert read_many(["t/missing", "t/empty"]) is None
+
+
+def test_read_many_refuses_files_that_disagree_on_types(monkeypatch, tmp_path):
+    from nussif_data.cache import read_many
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    _put("t/a", _chain_day("2024-06-03"))
+    _put("t/b", _chain_day("2024-06-04").astype({"strike": "int64"}))
+    with pytest.raises(SchemaError, match="disagree on schema"):
+        read_many(["t/a", "t/b"])
+
+
+def test_recording_fingerprint_sees_rewrites_and_filled_gaps(monkeypatch, tmp_path):
+    from nussif_data.cache import dated_keys, fingerprint, read_many, recording
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    for day in ("2024-06-03", "2024-06-05"):
+        _put(f"t/{day}/band", _chain_day(day))
+    with recording() as rec:
+        read_many(dated_keys("t", "band", "2024-06-01", "2024-06-30"))
+    one = fingerprint(rec.entries)
+    assert fingerprint(rec.entries) == one  # nothing changed
+    _put("t/2024-06-04/band", _chain_day("2024-06-04"))  # a gap filled: never read before
+    two = fingerprint(rec.entries)
+    assert two != one
+    _put("t/2024-06-05/band", _chain_day("2024-06-05", strikes=(100.0, 110.0)))  # refetched
+    assert fingerprint(rec.entries) != two
+
+
+def test_recordings_nest_and_note_replays_into_every_open_one(monkeypatch, tmp_path):
+    from nussif_data.cache import is_cached, note, recording
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    with recording() as outer:
+        with recording() as inner:
+            is_cached("t/a")  # a lookup counts, present or not
+        note(("file", "t/b"))  # e.g. a memo hit replaying what it read earlier
+    assert inner.entries == {("file", "t/a")}
+    assert outer.entries == {("file", "t/a"), ("file", "t/b")}
+    note(("file", "t/c"))  # no recording open: nothing to do
+
+
+def test_databento_option_chain_history_matches_per_day_reads(monkeypatch, tmp_path):
+    from nussif_data.connectors.databento import DatabentoConnector
+    from nussif_data.core.errors import NotCached
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    conn = DatabentoConnector.__new__(DatabentoConnector)
+    conn.cfg = {"datasets": {"option_chain": {}}}
+    for day in ("2024-06-03", "2024-06-04", "2024-06-06"):
+        _put(f"databento/option_chain/SPY/{day}/m0.25_d15-60", _chain_day(day))
+    _put(
+        "databento/option_chain/SPY/2024-06-05/m0.25_d0-150", _chain_day("2024-06-05")
+    )  # other band
+    band = {"moneyness": 0.25, "min_dte": 15, "max_dte": 60}
+
+    out = conn.option_chain_history("spy", start="2024-06-03", end="2024-06-04", **band)
+    per_day = pd.concat(
+        [
+            conn.option_chain("SPY", date=d, cache_only=True, **band)
+            for d in ("2024-06-03", "2024-06-04")
+        ],
+        ignore_index=True,
+    )
+    pd.testing.assert_frame_equal(out, per_day)
+    with pytest.raises(NotCached):
+        conn.option_chain_history("SPY", start="2024-06-05", end="2024-06-05", **band)
+
+
+def test_massive_history_reads_the_cache_without_asking_for_trading_days(monkeypatch, tmp_path):
+    import nussif_data as nd
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+
+    def no_network(*a, **k):
+        raise AssertionError("a cache-only range read must not look up trading days")
+
+    monkeypatch.setattr(nd.massive.option_chain, "_trading_days", no_network)
+    for day in ("2024-06-03", "2024-06-04"):
+        _put(f"massive/option_chain/SPY/{day}/m0.25_dte15-60", _chain_day(day))
+    out = nd.massive.option_chain_history("SPY", start="2024-06-01", end="2024-06-30")
+    per_day = pd.concat(
+        [
+            nd.massive.option_chain("SPY", date=d).fetch(cache_only=True)
+            for d in ("2024-06-03", "2024-06-04")
+        ],
+        ignore_index=True,
+    )
+    pd.testing.assert_frame_equal(out, per_day)
+
+
+def test_massive_assemble_stores_whole_number_strikes_as_float():
+    """Regression: JSON gives ints when every strike that day is whole, and
+    one int64 day broke reading a range of days as one table."""
+    from nussif_data.connectors.massive.options import OptionChainFetcher
+
+    contracts = pd.DataFrame(
+        {
+            "ticker": ["O:QQQ1"],
+            "underlying_ticker": ["QQQ"],
+            "contract_type": ["put"],
+            "strike_price": [500],
+            "expiration_date": ["2025-08-15"],
+            "date": ["2025-07-25"],
+        }
+    )
+    quotes = pd.DataFrame(
+        {
+            "ticker": ["O:QQQ1"],
+            "bid_price": [2],
+            "ask_price": [3],
+            "bid_size": [1],
+            "ask_size": [1],
+            "lookback_min_used": [3],
+            "sip_timestamp": [1721937600000000000],
+        }
+    )
+    out = OptionChainFetcher._assemble(contracts, quotes)
+    assert {str(out[c].dtype) for c in ("strike", "bid", "ask")} == {"float64"}
