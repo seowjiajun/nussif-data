@@ -52,6 +52,11 @@ class MassiveConnector(Connector):
         )
         self.option_chain = OptionChainFetcher(cfg, self.http, self._vendor)
 
+    def option_chain_history(self, symbol, *, start, end, **band):
+        """Every cached EOD chain for `symbol` in [`start`, `end`], in one
+        read -- cache only (`OptionChainFetcher.history`)."""
+        return self.option_chain.history(symbol, start=start, end=end, **band)
+
     def datasets(self) -> list[Dataset]:
         return [
             Dataset(

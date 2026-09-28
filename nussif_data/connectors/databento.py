@@ -38,9 +38,9 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from .._config import get_key
-from ..cache import cache_dir, cached, require_cached
+from ..cache import cache_dir, cached, keys_under, read_many, require_cached
 from ..core import Connector, Dataset
-from ..core.errors import OutsideHistory, UpstreamError
+from ..core.errors import NotCached, OutsideHistory, UpstreamError
 from ..core.schema import OPEN_INTEREST, OPTION_CHAIN
 
 _STAT_TYPE_OPEN_INTEREST = 9  # databento_dbn.StatType.OPEN_INTEREST
@@ -173,9 +173,7 @@ class DatabentoConnector(Connector):
         cached (research that must not spend on vendor calls).
         """
         spec = self.cfg["datasets"]["option_chain"]
-        mny = spec.get("default_moneyness", 0.25) if moneyness is None else moneyness
-        ndte = spec.get("default_min_dte", 0) if min_dte is None else min_dte
-        mdte = spec.get("default_max_dte", 150) if max_dte is None else max_dte
+        mny, ndte, mdte = self._band(moneyness, min_dte, max_dte)
         syms = [
             str(s).upper()
             for s in (
@@ -190,7 +188,7 @@ class DatabentoConnector(Connector):
         # includes " 00:00:00" -- Databento's `start`/`end` reject that, only clean ISO dates
         self._check_history(date_str, spec)
 
-        keys = {s: f"databento/option_chain/{s}/{date_str}/m{mny}_d{ndte}-{mdte}" for s in syms}
+        keys = {s: self._chain_key(s, date_str, mny, ndte, mdte) for s in syms}
         if cache_only:
             require_cached(keys.values(), refresh)
         frames = [
@@ -203,6 +201,46 @@ class DatabentoConnector(Connector):
         ]
         out = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
         return OPTION_CHAIN.validate(out, where="databento.option_chain")
+
+    def option_chain_history(
+        self, symbol, *, start, end, moneyness=None, min_dte=None, max_dte=None
+    ) -> pd.DataFrame:
+        """Every cached EOD option chain for `symbol` dated in [`start`, `end`],
+        as one frame: each day's rows exactly as `option_chain(date=...)`
+        returns them, concatenated in date order, read in one scan (`cache.
+        read_many`) instead of one file read and validation per day.
+
+        Cache only, and the days are the ones on disk: it never fetches and
+        never asks the vendor which days should exist -- a missing day is
+        simply absent (`nussif-data backfill option_chain` fills gaps), and
+        an empty cached day is skipped. Raises `NotCached` if no day in the
+        range is cached for this band."""
+        mny, ndte, mdte = self._band(moneyness, min_dte, max_dte)
+        sym = str(symbol).upper()
+        lo, hi = (pd.Timestamp(d).strftime("%Y-%m-%d") for d in (start, end))
+        tail = self._chain_key(sym, "", mny, ndte, mdte).rsplit("/", 1)[1]
+        keys = [
+            k
+            for k in keys_under(f"databento/option_chain/{sym}")
+            if k.rsplit("/", 1)[1] == tail and lo <= k.split("/")[3] <= hi
+        ]
+        out = read_many(keys)
+        if out is None:
+            raise NotCached(f"databento: no {sym} option chain cached in [{lo}, {hi}] for {tail}")
+        return OPTION_CHAIN.validate(out, where="databento.option_chain_history")
+
+    def _band(self, moneyness, min_dte, max_dte) -> tuple:
+        """(moneyness, min_dte, max_dte) with the dataset's defaults filled in."""
+        spec = self.cfg["datasets"]["option_chain"]
+        return (
+            spec.get("default_moneyness", 0.25) if moneyness is None else moneyness,
+            spec.get("default_min_dte", 0) if min_dte is None else min_dte,
+            spec.get("default_max_dte", 150) if max_dte is None else max_dte,
+        )
+
+    @staticmethod
+    def _chain_key(sym: str, date_str: str, mny, ndte, mdte) -> str:
+        return f"databento/option_chain/{sym}/{date_str}/m{mny}_d{ndte}-{mdte}"
 
     def open_interest(self, *symbols, date, refresh: bool = False, cache_only: bool = False):
         """Daily open interest per contract for each `symbol` on `date`

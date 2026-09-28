@@ -123,6 +123,78 @@ def is_cached(key: str) -> bool:
     return os.path.exists(_path_for(key))
 
 
+def keys_under(prefix: str) -> list[str]:
+    """Every cached key below `prefix`, sorted -- e.g. every day of one
+    symbol's option chains (`databento/option_chain/SPY`). One directory
+    walk, no parquet reads and no network: how a cache-only range read finds
+    its days without asking a vendor which days exist."""
+    root = cache_dir()
+    keys = []
+    for dirpath, _, files in os.walk(os.path.join(root, *prefix.split("/"))):
+        for f in files:
+            if f.endswith(".parquet"):
+                rel = os.path.relpath(os.path.join(dirpath, f), root)
+                keys.append(rel[: -len(".parquet")].replace(os.sep, "/"))
+    return sorted(keys)
+
+
+def read_many(keys) -> pd.DataFrame | None:
+    """The cached files for `keys` as one table, read in a single pyarrow
+    dataset scan instead of one `read_parquet` per key (~4-7x faster over a
+    year of daily option chains). Rows keep `keys` order. Uncached keys and
+    empty (zero-row) files are skipped; None if nothing is left.
+
+    Raises `SchemaError` if the files disagree on column names or types --
+    one scan would otherwise cast every file to the first one's types (an
+    int64 `strike` truncating another day's 602.5), silently."""
+    import pyarrow.dataset as ds
+    import pyarrow.parquet as pq
+
+    from .core.errors import SchemaError
+
+    paths, schema, first = [], None, None
+    for key in keys:
+        path = _path_for(key)
+        if not os.path.exists(path):
+            continue
+        meta = pq.read_metadata(path)
+        if meta.num_rows == 0:
+            continue
+        file_schema = meta.schema.to_arrow_schema()
+        if schema is None:
+            schema, first = file_schema, key
+        elif not file_schema.remove_metadata().equals(schema.remove_metadata()):
+            raise SchemaError(
+                f"cached files disagree on schema: {key} has "
+                f"{file_schema.remove_metadata()} but {first} has "
+                f"{schema.remove_metadata()} -- rewrite the odd file(s) with one set of types"
+            )
+        paths.append(path)
+    if not paths:
+        return None
+    # the first file's schema carries pandas' metadata, so dtypes round-trip
+    # exactly as a single read_parquet would give them
+    return ds.dataset(paths, format="parquet", schema=schema).to_table().to_pandas()
+
+
+def fingerprint(keys) -> str:
+    """Short hash of which of `keys` are cached and each file's size and
+    modification time: it changes whenever a file is added (a gap filled),
+    refetched or rewritten. A result derived from these files keys its own
+    cache on this as well as on its code, so filling data invalidates it.
+    Stats only, no parquet reads."""
+    import hashlib
+
+    h = hashlib.sha256()
+    for key in keys:
+        try:
+            st = os.stat(_path_for(key))
+        except FileNotFoundError:
+            continue
+        h.update(f"{key}:{st.st_size}:{st.st_mtime_ns};".encode())
+    return h.hexdigest()[:10]
+
+
 def cache_summary() -> list[dict]:
     """One row per top-level `<vendor>/<dataset>` key prefix under the cache
     root: file count, total size, most recent write. Walks the whole cache
