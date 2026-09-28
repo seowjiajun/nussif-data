@@ -21,7 +21,7 @@ import pandas as pd
 
 from ... import _util
 from ..._config import get_key
-from ...cache import cache_dir, cached, is_cached, keys_under, read_many, require_cached
+from ...cache import cache_dir, cached, dated_keys, is_cached, read_many, require_cached
 from ...core.errors import NotCached, OutsideHistory, RateLimited, UpstreamError
 from ...core.http import _redact
 from ...core.schema import OPTION_CHAIN
@@ -489,11 +489,7 @@ class OptionChainFetcher:
         sym = str(symbol).upper()
         tag = _band_tag(*self._band(moneyness, min_dte, max_dte))
         lo, hi = (pd.Timestamp(d).strftime("%Y-%m-%d") for d in (start, end))
-        keys = [
-            k
-            for k in keys_under(f"massive/option_chain/{sym}")
-            if k.rsplit("/", 1)[1] == tag and lo <= k.split("/")[3] <= hi
-        ]
+        keys = dated_keys(f"massive/option_chain/{sym}", tag, lo, hi)
         out = read_many(keys)
         if out is None:
             raise NotCached(f"massive: no {sym} option chain cached in [{lo}, {hi}] for {tag}")

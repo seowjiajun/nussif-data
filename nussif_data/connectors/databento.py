@@ -38,7 +38,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from .._config import get_key
-from ..cache import cache_dir, cached, keys_under, read_many, require_cached
+from ..cache import cache_dir, cached, dated_keys, read_many, require_cached
 from ..core import Connector, Dataset
 from ..core.errors import NotCached, OutsideHistory, UpstreamError
 from ..core.schema import OPEN_INTEREST, OPTION_CHAIN
@@ -219,11 +219,7 @@ class DatabentoConnector(Connector):
         sym = str(symbol).upper()
         lo, hi = (pd.Timestamp(d).strftime("%Y-%m-%d") for d in (start, end))
         tail = self._chain_key(sym, "", mny, ndte, mdte).rsplit("/", 1)[1]
-        keys = [
-            k
-            for k in keys_under(f"databento/option_chain/{sym}")
-            if k.rsplit("/", 1)[1] == tail and lo <= k.split("/")[3] <= hi
-        ]
+        keys = dated_keys(f"databento/option_chain/{sym}", tail, lo, hi)
         out = read_many(keys)
         if out is None:
             raise NotCached(f"databento: no {sym} option chain cached in [{lo}, {hi}] for {tail}")

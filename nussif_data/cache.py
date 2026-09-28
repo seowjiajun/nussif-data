@@ -123,19 +123,18 @@ def is_cached(key: str) -> bool:
     return os.path.exists(_path_for(key))
 
 
-def keys_under(prefix: str) -> list[str]:
-    """Every cached key below `prefix`, sorted -- e.g. every day of one
-    symbol's option chains (`databento/option_chain/SPY`). One directory
-    walk, no parquet reads and no network: how a cache-only range read finds
-    its days without asking a vendor which days exist."""
-    root = cache_dir()
-    keys = []
-    for dirpath, _, files in os.walk(os.path.join(root, *prefix.split("/"))):
-        for f in files:
-            if f.endswith(".parquet"):
-                rel = os.path.relpath(os.path.join(dirpath, f), root)
-                keys.append(rel[: -len(".parquet")].replace(os.sep, "/"))
-    return sorted(keys)
+def dated_keys(prefix: str, tail: str, start: str, end: str) -> list[str]:
+    """The cached keys `<prefix>/<YYYY-MM-DD>/<tail>` with a date in [`start`,
+    `end`] (ISO strings), in date order -- e.g. one symbol's option chains
+    for one band over a year. One directory listing plus a stat per day in
+    range, no parquet reads and no network: how a cache-only range read
+    finds its days without asking a vendor which days exist."""
+    try:
+        days = os.listdir(os.path.join(cache_dir(), *prefix.split("/")))
+    except FileNotFoundError:
+        return []
+    keys = (f"{prefix}/{d}/{tail}" for d in sorted(days) if start <= d <= end)
+    return [k for k in keys if is_cached(k)]
 
 
 def read_many(keys) -> pd.DataFrame | None:
