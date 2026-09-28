@@ -1820,19 +1820,34 @@ def test_read_many_refuses_files_that_disagree_on_types(monkeypatch, tmp_path):
         read_many(["t/a", "t/b"])
 
 
-def test_fingerprint_changes_when_a_day_is_added_or_rewritten(monkeypatch, tmp_path):
-    from nussif_data.cache import fingerprint
+def test_recording_fingerprint_sees_rewrites_and_filled_gaps(monkeypatch, tmp_path):
+    from nussif_data.cache import dated_keys, fingerprint, read_many, recording
 
     monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
-    keys = ["t/a", "t/b"]
-    _put("t/a", _chain_day("2024-06-03"))
-    one = fingerprint(keys)
-    assert fingerprint(keys) == one
-    _put("t/b", _chain_day("2024-06-04"))  # a gap filled
-    two = fingerprint(keys)
+    for day in ("2024-06-03", "2024-06-05"):
+        _put(f"t/{day}/band", _chain_day(day))
+    with recording() as rec:
+        read_many(dated_keys("t", "band", "2024-06-01", "2024-06-30"))
+    one = fingerprint(rec.entries)
+    assert fingerprint(rec.entries) == one  # nothing changed
+    _put("t/2024-06-04/band", _chain_day("2024-06-04"))  # a gap filled: never read before
+    two = fingerprint(rec.entries)
     assert two != one
-    _put("t/b", _chain_day("2024-06-04", strikes=(100.0, 105.0, 110.0)))  # refetched
-    assert fingerprint(keys) != two
+    _put("t/2024-06-05/band", _chain_day("2024-06-05", strikes=(100.0, 110.0)))  # refetched
+    assert fingerprint(rec.entries) != two
+
+
+def test_recordings_nest_and_note_replays_into_every_open_one(monkeypatch, tmp_path):
+    from nussif_data.cache import is_cached, note, recording
+
+    monkeypatch.setenv("NUSSIF_DATA_CACHE", str(tmp_path))
+    with recording() as outer:
+        with recording() as inner:
+            is_cached("t/a")  # a lookup counts, present or not
+        note(("file", "t/b"))  # e.g. a memo hit replaying what it read earlier
+    assert inner.entries == {("file", "t/a")}
+    assert outer.entries == {("file", "t/a"), ("file", "t/b")}
+    note(("file", "t/c"))  # no recording open: nothing to do
 
 
 def test_databento_option_chain_history_matches_per_day_reads(monkeypatch, tmp_path):
